@@ -7,7 +7,7 @@
 
 import type { WeightImportData } from "./weightImport"
 
-const INCH_TO_MM = 25.4
+import { INCH_TO_MM } from "./lengthUnits"
 
 let tesseractModule: typeof import("tesseract.js") | null = null
 

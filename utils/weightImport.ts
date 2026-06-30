@@ -354,15 +354,22 @@ export function generateLoadsFromTotalWeights(
  * 3, Baseframe Length 1641 mm, , , 63
  * 4, Baseframe Length 2941 mm, , , 127
  */
-const INCH_TO_MM = 25.4
+import {
+  INCH_TO_MM,
+  parseLengthFromText,
+} from "./lengthUnits"
 
 function parseLengthFromSectionCode(sectionCode: string): number {
-  const lengthMatch = sectionCode.match(/(\d+(?:\.\d+)?)\s*(mm|in(?:ch(?:es)?)?)/i)
-  if (!lengthMatch) return 0
+  const parsed = parseLengthFromText(sectionCode)
+  if (parsed) return parsed.millimeters
 
-  const value = parseFloat(lengthMatch[1])
-  const unit = lengthMatch[2].toLowerCase()
-  return unit.startsWith("in") ? value * INCH_TO_MM : value
+  // Bare number on "Casing Length 107.9" without unit → default inches
+  const bareMatch = sectionCode.match(/(?:Casing|Baseframe)\s+Length\s+(\d+(?:\.\d+)?)/i)
+  if (bareMatch) {
+    return parseLengthFromText(`Length ${bareMatch[1]} in`)?.millimeters ?? 0
+  }
+
+  return 0
 }
 
 function detectTableWeightUnit(headers: string[]): "kg" | "lbs" {

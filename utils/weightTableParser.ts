@@ -5,7 +5,11 @@
 
 import type { ParsedWeightTable } from "./weightTableParser"
 
-const INCH_TO_MM = 25.4
+import {
+  INCH_TO_MM,
+  parseLengthFromText,
+  parseLengthFromValue,
+} from "./lengthUnits"
 
 export interface ParsedWeightTable {
   casingSections: Array<{
@@ -80,27 +84,31 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 
   // Full-text patterns for multi-column rows collapsed onto one line
   const casingHeaderRe =
-    /(?:^|\s)(\d)\s+Casing\s+Length\s+(\d+(?:\.\d+)?)\s*in(?:\s+\S+)*?\s+(\d+(?:\.\d+)?)/gi
+    /(?:^|\s)(\d)\s+Casing\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?(?:\s+\S+)*?\s+(\d+(?:\.\d+)?)/gi
   let m
   while ((m = casingHeaderRe.exec(text)) !== null) {
-    // Avoid duplicates
     const sectionNo = parseInt(m[1], 10)
     if (!result.casingSections.find((s) => s.sectionNo === sectionNo)) {
+      const lengthText = `Casing Length ${m[2]} ${m[3] || "in"}`
+      const parsed = parseLengthFromText(lengthText)
       result.casingSections.push({
         sectionNo,
-        casingLengthIn: parseNum(m[2]),
-        sectionWeightLb: parseNum(m[3]),
+        casingLengthIn: parsed?.inches ?? parseLengthFromValue(parseNum(m[2]), lengthText).inches,
+        sectionWeightLb: parseNum(m[4]),
         components: [],
       })
     }
   }
 
   const baseframeRe =
-    /Baseframe\s+Length\s+(\d+(?:\.\d+)?)\s*in[\s\S]{0,80}?(\d+(?:\.\d+)?)\s*(?:lb)?/i
+    /Baseframe\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?[\s\S]{0,80}?(\d+(?:\.\d+)?)\s*(?:lb)?/i
   const baseframeMatch = text.match(baseframeRe)
   if (baseframeMatch) {
-    result.baseframeLengthIn = parseNum(baseframeMatch[1])
-    result.baseframeWeightLb = parseNum(baseframeMatch[2])
+    const lengthText = `Baseframe Length ${baseframeMatch[1]} ${baseframeMatch[2] || "in"}`
+    const parsed = parseLengthFromText(lengthText)
+    result.baseframeLengthIn =
+      parsed?.inches ?? parseLengthFromValue(parseNum(baseframeMatch[1]), lengthText).inches
+    result.baseframeWeightLb = parseNum(baseframeMatch[3])
   }
 
   const otherRe = /Other\s+components[\s\S]{0,40}?(\d+(?:\.\d+)?)/i
@@ -116,18 +124,18 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
     const lower = line.toLowerCase()
     if (lower.includes("section no") || lower.includes("function code")) continue
 
-    // Casing section header line
-    const casingLine =
-      line.match(/^(\d)\s+.*?Casing\s+Length\s+(\d+(?:\.\d+)?)\s*in/i) ||
-      line.match(/Casing\s+Length\s+(\d+(?:\.\d+)?)\s*in/i)
-    if (casingLine) {
-      const sectionNo = casingLine[1] ? parseInt(casingLine[1], 10) : currentSectionNo || result.casingSections.length + 1
+    // Casing section header line (in or mm, or bare number defaulting to inches)
+    if (lower.includes("casing") && lower.includes("length")) {
+      const sectionNoMatch = line.match(/^(\d)\s/)
+      const sectionNo = sectionNoMatch
+        ? parseInt(sectionNoMatch[1], 10)
+        : currentSectionNo || result.casingSections.length + 1
       currentSectionNo = sectionNo
-      const lengthIn = parseNum(casingLine[casingLine.length - 2] || casingLine[1])
 
-      // Section weight: last number on line, or number after "in"
-      const afterIn = line.split(/in/i)[1] || ""
-      const nums = (afterIn + " " + line).match(/\d+(?:\.\d+)?/g) || []
+      const parsed = parseLengthFromText(line)
+      const lengthIn = parsed?.inches ?? 0
+
+      const nums = line.match(/\d+(?:\.\d+)?/g) || []
       const sectionWeight = nums.length > 0 ? parseNum(nums[nums.length - 1]) : 0
 
       let section = result.casingSections.find((s) => s.sectionNo === sectionNo)
@@ -149,9 +157,9 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 
     // Baseframe line
     if (lower.includes("baseframe") && lower.includes("length")) {
-      const lenMatch = line.match(/(\d+(?:\.\d+)?)\s*in/i)
+      const parsed = parseLengthFromText(line)
+      if (parsed) result.baseframeLengthIn = parsed.inches
       const nums = line.match(/\d+(?:\.\d+)?/g) || []
-      if (lenMatch) result.baseframeLengthIn = parseNum(lenMatch[1])
       if (nums.length >= 2) result.baseframeWeightLb = parseNum(nums[nums.length - 1])
       currentSection = null
       continue
@@ -230,50 +238,70 @@ function parseWeightTableFromNumbers(text: string, weightUnit: "lbs" | "kg"): Pa
   }
 
   const allNums = [...text.matchAll(/\d+(?:\.\d+)?/g)].map((m) => parseFloat(m[0]))
-  const decimals = [...new Set(allNums.filter((n) => n % 1 !== 0 && n >= 2 && n <= 400))].sort(
-    (a, b) => b - a
-  )
 
-  // Baseframe length = largest decimal typically 100-400
-  const baseframeLength =
-    decimals.find((n) => n >= 80 && n <= 400) || decimals[0] || 0
-  if (baseframeLength) result.baseframeLengthIn = baseframeLength
+  // Build length candidates normalized to inches
+  const lengthCandidatesIn = [
+    ...new Set(
+      allNums
+        .filter((n) => (n % 1 !== 0 && n >= 2 && n <= 400) || (n >= 400 && n < 20000))
+        .map((n) => parseLengthFromValue(n, text).inches)
+    ),
+  ].sort((a, b) => b - a)
+
+  const baseframeLengthIn =
+    lengthCandidatesIn.find((n) => n >= 80 && n <= 400) || lengthCandidatesIn[0] || 0
+  if (baseframeLengthIn) result.baseframeLengthIn = baseframeLengthIn
 
   // Two casing lengths that sum to baseframe (within 3 in tolerance)
-  for (let i = 0; i < decimals.length; i++) {
-    for (let j = i + 1; j < decimals.length; j++) {
-      const sum = decimals[i] + decimals[j]
-      if (Math.abs(sum - baseframeLength) < 3) {
-        const [longer, shorter] = decimals[i] > decimals[j] ? [decimals[i], decimals[j]] : [decimals[j], decimals[i]]
+  for (let i = 0; i < lengthCandidatesIn.length; i++) {
+    for (let j = i + 1; j < lengthCandidatesIn.length; j++) {
+      const sum = lengthCandidatesIn[i] + lengthCandidatesIn[j]
+      if (Math.abs(sum - baseframeLengthIn) < 3) {
+        const [longer, shorter] =
+          lengthCandidatesIn[i] > lengthCandidatesIn[j]
+            ? [lengthCandidatesIn[i], lengthCandidatesIn[j]]
+            : [lengthCandidatesIn[j], lengthCandidatesIn[i]]
         if (!result.casingSections.find((s) => s.sectionNo === 1)) {
-          result.casingSections.push({ sectionNo: 1, casingLengthIn: longer, sectionWeightLb: 0, components: [] })
+          result.casingSections.push({
+            sectionNo: 1,
+            casingLengthIn: longer,
+            sectionWeightLb: 0,
+            components: [],
+          })
         }
         if (!result.casingSections.find((s) => s.sectionNo === 2)) {
-          result.casingSections.push({ sectionNo: 2, casingLengthIn: shorter, sectionWeightLb: 0, components: [] })
+          result.casingSections.push({
+            sectionNo: 2,
+            casingLengthIn: shorter,
+            sectionWeightLb: 0,
+            components: [],
+          })
         }
         break
       }
     }
   }
 
-  // Whole-number weights common in Systemair tables (50-400 lb range)
+  // Whole-number weights (50–999 lb)
   const wholeWeights = [...new Set(allNums.filter((n) => n >= 50 && n <= 999 && n % 1 === 0))].sort(
     (a, b) => b - a
   )
 
-  // Heuristic: largest whole weights often baseframe(356), unit total(962), section totals(259,168), other(179)
   if (wholeWeights.includes(962)) result.unitTotalLb = 962
   if (wholeWeights.includes(356)) result.baseframeWeightLb = 356
-  if (wholeWeights.includes(259) && result.casingSections[0]) result.casingSections[0].sectionWeightLb = 259
-  if (wholeWeights.includes(168) && result.casingSections[1]) result.casingSections[1].sectionWeightLb = 168
+  if (wholeWeights.includes(259) && result.casingSections[0])
+    result.casingSections[0].sectionWeightLb = 259
+  if (wholeWeights.includes(168) && result.casingSections[1])
+    result.casingSections[1].sectionWeightLb = 168
   if (wholeWeights.includes(179)) result.otherComponentsLb = 179
 
-  // If section weights still missing, assign from remaining large whole numbers
   if (result.casingSections[0]?.sectionWeightLb === 0 && wholeWeights.length >= 2) {
     const used = new Set([result.baseframeWeightLb, result.otherComponentsLb, result.unitTotalLb])
     const available = wholeWeights.filter((w) => !used.has(w))
-    if (available[0] && result.casingSections[0]) result.casingSections[0].sectionWeightLb = available[0]
-    if (available[1] && result.casingSections[1]) result.casingSections[1].sectionWeightLb = available[1]
+    if (available[0] && result.casingSections[0])
+      result.casingSections[0].sectionWeightLb = available[0]
+    if (available[1] && result.casingSections[1])
+      result.casingSections[1].sectionWeightLb = available[1]
   }
 
   assignComponentsByOrder(text, result)
@@ -371,4 +399,4 @@ export function mergeWeightTableWithLayout(
   return merged
 }
 
-export { INCH_TO_MM }
+export { INCH_TO_MM } from "./lengthUnits"

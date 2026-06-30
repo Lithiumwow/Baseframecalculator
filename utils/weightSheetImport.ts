@@ -5,8 +5,8 @@
 import type { WeightImportData, WeightImportSection, WeightImportComponent } from "./weightImport"
 import { getGenioxFrameWidth } from "./genioxDimensions"
 import type { ParsedLayout } from "./layoutOcr"
-import { INCH_TO_MM } from "./layoutOcr"
-import type { WeightImportData } from "./weightImport"
+import { INCH_TO_MM, inchesToMm } from "./layoutOcr"
+import { parseLengthFromText } from "./lengthUnits"
 import {
   parseWeightTableFromRawText,
   isEmptyWeightTable,
@@ -90,11 +90,14 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
 
     if (code.includes("casing length")) {
       const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
-      const lengthIn = lengthMatch
-        ? lengthMatch[0].includes("mm")
-          ? parseFloat(lengthMatch[1]) / INCH_TO_MM
-          : parseFloat(lengthMatch[1])
-        : 0
+      let lengthIn = 0
+      if (lengthMatch) {
+        const parsed = parseLengthFromText(lengthMatch[0])
+        lengthIn = parsed?.inches ?? 0
+      } else {
+        const parsed = parseLengthFromText(row.sectionCode)
+        lengthIn = parsed?.inches ?? 0
+      }
 
       currentCasing = {
         sectionNo: row.sectionNo,
@@ -105,11 +108,13 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
       casingSections.push(currentCasing)
     } else if (code.includes("baseframe length")) {
       const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
-      baseframeLengthIn = lengthMatch
-        ? lengthMatch[0].includes("mm")
-          ? parseFloat(lengthMatch[1]) / INCH_TO_MM
-          : parseFloat(lengthMatch[1])
-        : 0
+      if (lengthMatch) {
+        const parsed = parseLengthFromText(lengthMatch[0])
+        baseframeLengthIn = parsed?.inches ?? 0
+      } else {
+        const parsed = parseLengthFromText(row.sectionCode)
+        baseframeLengthIn = parsed?.inches ?? 0
+      }
       baseframeWeightLb = row.sectionWeight
       currentCasing = null
     } else if (code.includes("other components")) {
@@ -147,7 +152,7 @@ function assignComponentPositions(
 
   for (let sectionIdx = 0; sectionIdx < casingSections.length; sectionIdx++) {
     const section = casingSections[sectionIdx]
-    const sectionLengthMm = section.casingLengthIn * INCH_TO_MM
+    const sectionLengthMm = inchesToMm(section.casingLengthIn)
     let posInSectionMm = 0
 
     const layoutSegments = layout.componentSegmentLengthsIn
@@ -157,8 +162,8 @@ function assignComponentPositions(
     let segSum = 0
     let segCount = 0
     for (const seg of segmentsForSection) {
-      if (segSum + seg * INCH_TO_MM <= sectionLengthMm + 50) {
-        segSum += seg * INCH_TO_MM
+      if (segSum + inchesToMm(seg) <= sectionLengthMm + 50) {
+        segSum += inchesToMm(seg)
         segCount++
       } else break
     }
@@ -173,7 +178,7 @@ function assignComponentPositions(
       let positionInSectionMm: number
 
       if (segIdx < segmentsForSection.length) {
-        const segLenMm = segmentsForSection[segIdx] * INCH_TO_MM
+        const segLenMm = inchesToMm(segmentsForSection[segIdx])
         positionInSectionMm = posInSectionMm + segLenMm / 2
         posInSectionMm += segLenMm
         segIdx++
@@ -213,8 +218,8 @@ export function buildWeightImportFromSheets(
 ): WeightImportData {
   const frameLengthMm =
     layout.baseframeLengthMm ||
-    weightTable.baseframeLengthIn * INCH_TO_MM ||
-    weightTable.casingSections.reduce((s, c) => s + c.casingLengthIn * INCH_TO_MM, 0)
+    inchesToMm(weightTable.baseframeLengthIn) ||
+    weightTable.casingSections.reduce((s, c) => s + inchesToMm(c.casingLengthIn), 0)
 
   const frameWidthMm = getGenioxFrameWidth(genioxType)
   const unit = weightTable.weightUnit
@@ -226,7 +231,7 @@ export function buildWeightImportFromSheets(
 
   let currentPosition = 0
   const sections: WeightImportSection[] = weightTable.casingSections.map((cs, idx) => {
-    const lengthMm = cs.casingLengthIn * INCH_TO_MM
+    const lengthMm = inchesToMm(cs.casingLengthIn)
     const lengthRatio =
       totalCasingLengthIn > 0 ? cs.casingLengthIn / totalCasingLengthIn : 1
 
