@@ -26,7 +26,7 @@ import {
   createWeightImportTemplate,
   type WeightImportData,
 } from "../utils/weightImport"
-import { processImageWithOCR } from "../utils/ocr"
+import { processWeightTableImage } from "../utils/ocr"
 
 interface WeightImportDialogProps {
   onImport: (sections: Section[], loads: Load[]) => void
@@ -63,17 +63,37 @@ export function WeightImportDialog({
       setPreview(null)
       
       try {
-        console.log('Starting OCR processing for file:', file.name, file.type, file.size)
-        // Process image with OCR
-        const extractedText = await processImageWithOCR(file, (progress) => {
-          console.log('OCR progress:', progress)
+        const { formattedTable, importData } = await processWeightTableImage(file, (progress) => {
           setOcrProgress(progress)
         })
-        console.log('OCR completed, extracted text:', extractedText.substring(0, 200))
-        setImportText(extractedText)
-        setImportType("table") // OCR results are treated as table format
+
+        setImportText(formattedTable)
+        setImportType("table")
+
+        const sections = importData.sections
+          ? convertImportedSections(importData.sections, frameLength)
+          : existingSections
+
+        const loads = importData.components
+          ? convertImportedComponents(importData.components, sections, frameWidth)
+          : []
+
+        if (importData.totalWeights) {
+          const { sections: updatedSections, loads: additionalLoads } = generateLoadsFromTotalWeights(
+            importData.totalWeights.roof || 0,
+            importData.totalWeights.baseframe || 0,
+            frameLength,
+            frameWidth,
+            sections,
+            importData.totalWeights.unit || "kg"
+          )
+          setPreview({ sections: updatedSections, loads: [...loads, ...additionalLoads] })
+        } else {
+          setPreview({ sections, loads })
+        }
+
         setOcrProgress(100)
-        setError(null) // Clear any previous errors
+        setError(null)
       } catch (err) {
         console.error('OCR processing error:', err)
         const errorMessage = err instanceof Error ? err.message : "Failed to process image with OCR"
@@ -262,14 +282,14 @@ export function WeightImportDialog({
               />
               {importType === "ocr" && (
                 <p className="text-xs text-gray-500 mt-1">
-                  Upload a screenshot or image of the weight table. OCR will extract the text automatically.
+                  Upload a screenshot of the weight breakdown table. OCR will extract sections, components, and weights automatically.
                 </p>
               )}
             </div>
             {isProcessingOCR && (
               <div className="mt-2 flex items-center gap-2 text-sm text-blue-600">
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Processing image with OCR... {ocrProgress > 0 ? `${ocrProgress}%` : ''}</span>
+                <span>Reading table and parsing weights... {ocrProgress > 0 ? `${ocrProgress}%` : ""}</span>
               </div>
             )}
           </div>

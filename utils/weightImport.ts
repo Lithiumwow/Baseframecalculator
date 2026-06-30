@@ -354,6 +354,22 @@ export function generateLoadsFromTotalWeights(
  * 3, Baseframe Length 1641 mm, , , 63
  * 4, Baseframe Length 2941 mm, , , 127
  */
+const INCH_TO_MM = 25.4
+
+function parseLengthFromSectionCode(sectionCode: string): number {
+  const lengthMatch = sectionCode.match(/(\d+(?:\.\d+)?)\s*(mm|in(?:ch(?:es)?)?)/i)
+  if (!lengthMatch) return 0
+
+  const value = parseFloat(lengthMatch[1])
+  const unit = lengthMatch[2].toLowerCase()
+  return unit.startsWith("in") ? value * INCH_TO_MM : value
+}
+
+function detectTableWeightUnit(headers: string[]): "kg" | "lbs" {
+  const joined = headers.join(" ").toLowerCase()
+  return joined.includes("lb") ? "lbs" : "kg"
+}
+
 export function parseWeightImportTable(tableString: string): WeightImportData {
   const lines = tableString.split("\n").filter((line) => line.trim().length > 0)
   if (lines.length < 2) {
@@ -362,6 +378,7 @@ export function parseWeightImportTable(tableString: string): WeightImportData {
 
   // Parse header to find column indices
   const headers = lines[0].split(/\t|,|\|/).map((h) => h.trim().toLowerCase())
+  const weightUnit = detectTableWeightUnit(headers)
   const sectionNoIndex = headers.findIndex((h) => h.includes("section") && (h.includes("no") || h.includes("#")))
   const sectionCodeIndex = headers.findIndex((h) => h.includes("section") && h.includes("code"))
   const functionCodeIndex = headers.findIndex((h) => h.includes("function") && h.includes("code"))
@@ -376,21 +393,23 @@ export function parseWeightImportTable(tableString: string): WeightImportData {
   const components: WeightImportComponent[] = []
   const sectionMap = new Map<number, { section: WeightImportSection; startPos: number }>()
   let currentPosition = 0
+  let currentSectionNo = 0
 
   // First pass: identify sections and their lengths
   for (let i = 1; i < lines.length; i++) {
     const values = parseTableLine(lines[i])
-    const sectionNo = parseInt(values[sectionNoIndex]?.trim() || "0")
+    const sectionNoVal = parseInt(values[sectionNoIndex]?.trim() || "0")
+    if (sectionNoVal > 0) currentSectionNo = sectionNoVal
+    const sectionNo = currentSectionNo
+
     const sectionCode = values[sectionCodeIndex]?.trim() || ""
     const sectionWeight = parseFloat(values[sectionWeightIndex]?.trim() || "0")
-    const functionCode = values[functionCodeIndex]?.trim() || ""
-    const functionWeight = parseFloat(values[functionWeightIndex]?.trim() || "0")
+
+    if (sectionCode.toLowerCase().includes("weight of unit")) continue
 
     // If this is a section header row (has Section Code with length info)
     if (sectionCode && (sectionCode.includes("Casing Length") || sectionCode.includes("Baseframe Length"))) {
-      // Extract length from section code (e.g., "Casing Length 1641 mm" -> 1641)
-      const lengthMatch = sectionCode.match(/(\d+(?:\.\d+)?)\s*mm/i)
-      const length = lengthMatch ? parseFloat(lengthMatch[1]) : 0
+      const length = parseLengthFromSectionCode(sectionCode)
 
       if (length > 0 && sectionNo > 0) {
         const section: WeightImportSection = {
@@ -403,10 +422,10 @@ export function parseWeightImportTable(tableString: string): WeightImportData {
         // Determine if this is casing or baseframe
         if (sectionCode.includes("Casing Length")) {
           section.casingWeight = sectionWeight > 0 ? sectionWeight : undefined
-          section.casingWeightUnit = "kg"
+          section.casingWeightUnit = weightUnit
         } else if (sectionCode.includes("Baseframe Length")) {
           section.baseframeWeight = sectionWeight > 0 ? sectionWeight : undefined
-          section.baseframeWeightUnit = "kg"
+          section.baseframeWeightUnit = weightUnit
         }
 
         sectionMap.set(sectionNo, { section, startPos: currentPosition })
@@ -417,32 +436,49 @@ export function parseWeightImportTable(tableString: string): WeightImportData {
   }
 
   // Second pass: identify components within sections
+  currentSectionNo = 0
   for (let i = 1; i < lines.length; i++) {
     const values = parseTableLine(lines[i])
-    const sectionNo = parseInt(values[sectionNoIndex]?.trim() || "0")
+    const sectionNoVal = parseInt(values[sectionNoIndex]?.trim() || "0")
+    if (sectionNoVal > 0) currentSectionNo = sectionNoVal
+    const sectionNo = currentSectionNo
+
+    const sectionCode = values[sectionCodeIndex]?.trim() || ""
     const functionCode = values[functionCodeIndex]?.trim() || ""
     const functionWeight = parseFloat(values[functionWeightIndex]?.trim() || "0")
+    const sectionWeight = parseFloat(values[sectionWeightIndex]?.trim() || "0")
 
-    // If this is a component row (has Function Code and weight)
-    if (functionCode && functionWeight > 0 && sectionNo > 0) {
-      const sectionInfo = sectionMap.get(sectionNo)
-      if (sectionInfo) {
-        // Calculate position within section (distribute components evenly for now)
-        // In a real scenario, you might want to specify exact positions
-        const sectionLength = sectionInfo.section.length || 1000
-        const componentPosition = sectionLength / 2 // Center of section as default
+    if (sectionCode.toLowerCase().includes("weight of unit")) continue
 
-        const component: WeightImportComponent = {
-          name: functionCode,
-          sectionIndex: sections.indexOf(sectionInfo.section),
-          position: componentPosition,
-          weight: functionWeight,
-          weightUnit: "kg",
-          loadType: "Point Load",
-        }
+    const sectionInfo = sectionMap.get(sectionNo)
 
-        components.push(component)
-      }
+    // "Other components" row — weight in section column
+    if (sectionCode.toLowerCase().includes("other components") && sectionWeight > 0 && sectionInfo) {
+      const sectionLength = sectionInfo.section.length || 1000
+      components.push({
+        name: "Other components",
+        sectionIndex: sections.indexOf(sectionInfo.section),
+        position: sectionLength / 2,
+        weight: sectionWeight,
+        weightUnit,
+        loadType: "Point Load",
+      })
+      continue
+    }
+
+    // Component row (Function Code + function weight)
+    if (functionCode && functionWeight > 0 && sectionNo > 0 && sectionInfo) {
+      const sectionLength = sectionInfo.section.length || 1000
+      const componentPosition = sectionLength / 2
+
+      components.push({
+        name: functionCode,
+        sectionIndex: sections.indexOf(sectionInfo.section),
+        position: componentPosition,
+        weight: functionWeight,
+        weightUnit,
+        loadType: "Point Load",
+      })
     }
   }
 
