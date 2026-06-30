@@ -169,7 +169,8 @@ export function WeightImportDialog({
       setError(null)
     } catch (err) {
       console.error("Sheet import error:", err)
-      setError(err instanceof Error ? err.message : "Failed to process sheets")
+      const errorMessage = err instanceof Error ? err.message : "Failed to process sheets"
+      setError(errorMessage)
       setPreview(null)
     } finally {
       setIsProcessingOCR(false)
