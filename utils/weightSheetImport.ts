@@ -2,14 +2,17 @@
  * Build complete WeightImportData JSON from weight table + layout sheet OCR.
  */
 
-import type {
-  WeightImportData,
-  WeightImportSection,
-  WeightImportComponent,
-} from "./weightImport"
+import type { WeightImportData, WeightImportSection, WeightImportComponent } from "./weightImport"
 import { getGenioxFrameWidth } from "./genioxDimensions"
 import type { ParsedLayout } from "./layoutOcr"
 import { INCH_TO_MM } from "./layoutOcr"
+import type { WeightImportData } from "./weightImport"
+import {
+  parseWeightTableFromRawText,
+  isEmptyWeightTable,
+  mergeWeightTableWithLayout,
+  type ParsedWeightTable,
+} from "./weightTableParser"
 import { processWeightTableImage } from "./ocr"
 import { processLayoutImage } from "./layoutOcr"
 import { calculateCOG, buildCOGItemsFromImport, type COGResult } from "./cogCalculation"
@@ -24,19 +27,7 @@ export interface ParsedWeightRow {
   sectionWeight: number
 }
 
-export interface ParsedWeightTable {
-  casingSections: Array<{
-    sectionNo: number
-    casingLengthIn: number
-    sectionWeightLb: number
-    components: Array<{ name: string; weightLb: number }>
-  }>
-  baseframeLengthIn: number
-  baseframeWeightLb: number
-  otherComponentsLb: number
-  unitTotalLb: number
-  weightUnit: "lbs" | "kg"
-}
+export type { ParsedWeightTable }
 
 export interface SheetImportResult {
   importData: WeightImportData
@@ -295,12 +286,36 @@ export async function processWeightSheets(
   )
 
   onProgress?.("Reading weights table...", 50)
-  const { formattedTable } = await processWeightTableImage(weightsImage, (p) =>
+  const { formattedTable, rawText } = await processWeightTableImage(weightsImage, (p) =>
     onProgress?.("Reading weights table...", 50 + p * 0.4)
   )
 
   onProgress?.("Building import data...", 92)
-  const weightTable = parseWeightTableStructured(formattedTable)
+
+  // Try structured CSV first, then raw OCR text (more reliable for screenshots)
+  let weightTable = parseWeightTableStructured(formattedTable)
+  if (isEmptyWeightTable(weightTable)) {
+    weightTable = parseWeightTableFromRawText(rawText)
+  }
+  if (isEmptyWeightTable(weightTable)) {
+    weightTable = parseWeightTableFromRawText(formattedTable)
+  }
+
+  // Fill gaps from layout drawing dimensions
+  weightTable = mergeWeightTableWithLayout(
+    weightTable,
+    layout.casingSectionLengthsIn,
+    layout.baseframeLengthIn
+  )
+
+  if (isEmptyWeightTable(weightTable)) {
+    throw new Error(
+      "Could not extract weight data from the weights table image. " +
+        "Try a clearer screenshot, or paste the generated JSON manually after editing.\n\n" +
+        "OCR raw text preview:\n" + rawText.substring(0, 500)
+    )
+  }
+
   const importData = buildWeightImportFromSheets(weightTable, layout, genioxType)
   const json = JSON.stringify(importData, null, 2)
 

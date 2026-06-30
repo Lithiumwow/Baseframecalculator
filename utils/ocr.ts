@@ -6,7 +6,6 @@
  */
 
 import type { WeightImportData } from "./weightImport"
-import { parseWeightImportTable } from "./weightImport"
 
 const INCH_TO_MM = 25.4
 
@@ -87,7 +86,7 @@ export async function preprocessImageForOCR(file: File): Promise<Blob> {
 }
 
 function groupWordsIntoRows(words: OCRWord[], yThreshold = 18): OCRWord[][] {
-  const filtered = words.filter((w) => w.text.trim() && w.confidence > 30)
+  const filtered = words.filter((w) => w.text.trim() && w.confidence > 15)
   const sorted = [...filtered].sort((a, b) => a.bbox.y0 - b.bbox.y0)
   const rows: OCRWord[][] = []
 
@@ -336,7 +335,7 @@ export async function extractTextFromImage(
     })
 
     await worker.setParameters({
-      tessedit_pageseg_mode: PSM.SINGLE_BLOCK,
+      tessedit_pageseg_mode: PSM.AUTO,
       preserve_interword_spaces: "1",
     })
 
@@ -355,8 +354,14 @@ export async function extractTextFromImage(
       confidence: w.confidence,
     }))
 
+    // Combine line texts when word-level data is sparse
+    const lineTexts = (data.lines || []).map((l) => l.text).filter(Boolean)
+    const text =
+      data.text?.trim() ||
+      (lineTexts.length > 0 ? lineTexts.join("\n") : "")
+
     if (onProgress) onProgress(95)
-    return { text: data.text, words }
+    return { text, words, lineTexts }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error"
     throw new Error(`OCR failed: ${errorMessage}`)
@@ -381,9 +386,12 @@ export async function processWeightTableImage(
   if (onProgress) onProgress(2)
   const preprocessed = await preprocessImageForOCR(imageFile)
 
-  const { text: rawText, words } = await extractTextFromImage(preprocessed, (p) => {
+  const { text: rawText, words, lineTexts } = await extractTextFromImage(preprocessed, (p) => {
     if (onProgress) onProgress(5 + Math.round(p * 0.9))
   })
+
+  // Prefer line-joined text for table parsing when available
+  const ocrBlob = lineTexts.length > 2 ? lineTexts.join("\n") : rawText
 
   let dataRows = rowsFromBoundingBoxes(words)
   let formattedTable: string
@@ -391,18 +399,17 @@ export async function processWeightTableImage(
   if (dataRows.dataRows.length >= 2) {
     formattedTable = buildWeightTableCSV(dataRows.dataRows, dataRows.weightUnit)
   } else {
-    formattedTable = parseWeightTableFromText(rawText)
+    formattedTable = parseWeightTableFromText(ocrBlob)
   }
 
   if (formattedTable.split("\n").length < 3) {
-    formattedTable = parseWeightTableFromText(rawText)
+    formattedTable = parseWeightTableFromText(ocrBlob)
   }
 
-  const importData = parseWeightImportTable(formattedTable)
-
+  // Don't call parseWeightImportTable here — sheet import uses weightTableParser instead
   if (onProgress) onProgress(100)
 
-  return { formattedTable, importData, rawText }
+  return { formattedTable, importData: { sections: [], components: [] } as WeightImportData, rawText: ocrBlob }
 }
 
 /** @deprecated Use processWeightTableImage for structured results */
