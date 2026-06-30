@@ -31,6 +31,8 @@ export interface COGResult {
   cogYRatio: number
 }
 
+import { getDistributedLoadTotalWeightN, nToLbs } from "./conversions"
+
 function toKg(weight: number, unit: "N" | "kg" | "lbs"): number {
   if (unit === "N") return weight / 9.81
   if (unit === "lbs") return weight / 2.20462
@@ -169,17 +171,21 @@ export function buildCOGItemsFromImport(
   for (const load of loads) {
     const unit = load.unit || "lbs"
     let x = load.startPosition
+    let weight = load.magnitude
 
     if (load.type === "Distributed Load" && load.loadLength) {
       x = load.startPosition + load.loadLength / 2
+      if (unit === "N") {
+        weight = nToLbs(getDistributedLoadTotalWeightN(load))
+      }
     } else if (load.type === "Uniform Load" && load.endPosition) {
       x = (load.startPosition + load.endPosition) / 2
     }
 
     items.push({
       name: load.name || "Load",
-      weight: load.magnitude,
-      weightUnit: unit,
+      weight,
+      weightUnit: load.type === "Distributed Load" && unit === "N" ? "lbs" : unit,
       x,
     })
   }

@@ -1171,7 +1171,9 @@ export default function BeamLoadCalculator() {
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <Label htmlFor={`load-magnitude-${index}`} className="flex items-center gap-2">
                     <BarChart3 className="w-4 h-4 text-gray-500" />
-                    Magnitude
+                    {load.type === "Distributed Load" && (load.unit === "kg" || load.unit === "lbs")
+                      ? "Total Weight"
+                      : "Magnitude"}
                   </Label>
                   <div className="flex gap-2">
                     <Input

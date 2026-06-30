@@ -18,6 +18,12 @@ import { processLayoutImage } from "./layoutOcr"
 import { calculateCOG, buildCOGItemsFromImport, type COGResult } from "./cogCalculation"
 import type { Section, Load } from "../types"
 import { convertImportedSections, convertImportedComponents } from "./weightImport"
+import {
+  splitSegmentsByCasingSections,
+  matchComponentsToSegments,
+  inferKindFromWeightName,
+  layoutTypeLabel,
+} from "./layoutSymbols"
 
 export interface ParsedWeightRow {
   sectionNo: number
@@ -41,8 +47,7 @@ export interface SheetImportResult {
   loads: Load[]
 }
 
-const SKIP_COMPONENTS = new Set(["casing"])
-const MIN_COMPONENT_WEIGHT = 0.5
+const SKIP_COMPONENTS = new Set<string>() // all components become distributed loads
 
 /**
  * Parse structured rows from weight table OCR CSV text.
@@ -140,69 +145,92 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
 }
 
 /**
- * Assign component positions from layout segment lengths.
+ * Build distributed loads by matching weight-table names to layout segments via icon types.
+ * Casing spans the full section; Filter→filter icon, Coils→coil, Fan→fan, etc.
  */
-function assignComponentPositions(
+function assignComponentLoads(
   casingSections: ParsedWeightTable["casingSections"],
-  layout: ParsedLayout
+  layout: ParsedLayout,
+  frameWidthMm: number,
+  weightUnit: "lbs" | "kg"
 ): WeightImportComponent[] {
   const components: WeightImportComponent[] = []
-  let segmentIndex = 0
-  let frameOffsetMm = 0
+
+  const allSegments =
+    layout.componentSegments?.length > 0
+      ? layout.componentSegments
+      : layout.componentSegmentLengthsIn.map((lengthIn) => ({
+          lengthIn,
+          type: "unknown" as const,
+        }))
+
+  const sectionSegmentGroups = splitSegmentsByCasingSections(
+    allSegments,
+    layout.casingSectionLengthsIn.length > 0
+      ? layout.casingSectionLengthsIn
+      : casingSections.map((s) => s.casingLengthIn)
+  )
 
   for (let sectionIdx = 0; sectionIdx < casingSections.length; sectionIdx++) {
     const section = casingSections[sectionIdx]
     const sectionLengthMm = inchesToMm(section.casingLengthIn)
-    let posInSectionMm = 0
+    const sectionSegments = sectionSegmentGroups[sectionIdx] || []
 
-    const layoutSegments = layout.componentSegmentLengthsIn
-    let segmentsForSection = layoutSegments.slice(segmentIndex)
+    const sectionComponents = section.components.filter((c) => c.weightLb > 0)
+    const assignments = matchComponentsToSegments(
+      sectionSegments,
+      sectionComponents,
+      sectionLengthMm,
+      inchesToMm
+    )
 
-    // Trim segments to fit section length
-    let segSum = 0
-    let segCount = 0
-    for (const seg of segmentsForSection) {
-      if (segSum + inchesToMm(seg) <= sectionLengthMm + 50) {
-        segSum += inchesToMm(seg)
-        segCount++
-      } else break
-    }
-    segmentsForSection = segmentsForSection.slice(0, Math.max(segCount, 1))
-    segmentIndex += segmentsForSection.length
+    let fallbackPosMm = 0
+    let fallbackSegIdx = 0
 
-    let segIdx = 0
-    for (const comp of section.components) {
-      if (SKIP_COMPONENTS.has(comp.name.toLowerCase())) continue
-      if (comp.weightLb < MIN_COMPONENT_WEIGHT) continue
+    sectionComponents.forEach((comp, compIdx) => {
+      const assignment = assignments.get(compIdx)
+      const kind = inferKindFromWeightName(comp.name)
 
-      let positionInSectionMm: number
+      let loadLengthMm: number
+      let positionMm: number
+      let displayName = comp.name
 
-      if (segIdx < segmentsForSection.length) {
-        const segLenMm = inchesToMm(segmentsForSection[segIdx])
-        positionInSectionMm = posInSectionMm + segLenMm / 2
-        posInSectionMm += segLenMm
-        segIdx++
+      if (kind === "casing") {
+        loadLengthMm = sectionLengthMm
+        positionMm = 0
+      } else if (assignment && assignment.segmentIndex >= 0) {
+        loadLengthMm = inchesToMm(assignment.segment.lengthIn)
+        positionMm = assignment.positionInSectionMm
+        if (assignment.segment.type !== "unknown") {
+          displayName = `${comp.name} (${layoutTypeLabel(assignment.segment.type)})`
+        }
+      } else if (fallbackSegIdx < sectionSegments.length) {
+        loadLengthMm = inchesToMm(sectionSegments[fallbackSegIdx].lengthIn)
+        positionMm = fallbackPosMm
+        fallbackPosMm += loadLengthMm
+        fallbackSegIdx++
       } else {
-        // Evenly distribute remaining components
-        const remaining = section.components.filter(
-          (c) =>
-            !SKIP_COMPONENTS.has(c.name.toLowerCase()) && c.weightLb >= MIN_COMPONENT_WEIGHT
-        ).length
-        const idx = section.components.indexOf(comp)
-        positionInSectionMm = (sectionLengthMm / (remaining + 1)) * (idx + 1)
+        const remaining = sectionComponents.length - compIdx
+        loadLengthMm = Math.max((sectionLengthMm - fallbackPosMm) / Math.max(remaining, 1), 50)
+        positionMm = fallbackPosMm
+        fallbackPosMm += loadLengthMm
+      }
+
+      if (positionMm + loadLengthMm > sectionLengthMm + 1) {
+        loadLengthMm = Math.max(sectionLengthMm - positionMm, 50)
       }
 
       components.push({
-        name: comp.name,
+        name: displayName,
         sectionIndex: sectionIdx,
-        position: positionInSectionMm,
+        position: positionMm,
         weight: comp.weightLb,
-        weightUnit: "lbs",
-        loadType: "Point Load",
+        weightUnit,
+        loadType: "Distributed Load",
+        loadLength: Math.round(loadLengthMm),
+        loadWidth: frameWidthMm,
       })
-    }
-
-    frameOffsetMm += sectionLengthMm
+    })
   }
 
   return components
@@ -235,8 +263,8 @@ export function buildWeightImportFromSheets(
     const lengthRatio =
       totalCasingLengthIn > 0 ? cs.casingLengthIn / totalCasingLengthIn : 1
 
-    const casingShell = cs.components.find((c) => c.name.toLowerCase() === "casing")
-    const casingShellWeight = casingShell?.weightLb ?? 0
+    // Casing weight lives in Loads as distributed load — keep section shell at 0 to avoid double-count
+    const casingShellWeight = 0
 
     const section: WeightImportSection = {
       name: `Section ${cs.sectionNo || idx + 1}`,
@@ -258,7 +286,12 @@ export function buildWeightImportFromSheets(
     return section
   })
 
-  const components = assignComponentPositions(weightTable.casingSections, layout)
+  const components = assignComponentLoads(
+    weightTable.casingSections,
+    layout,
+    frameWidthMm,
+    unit === "kg" ? "kg" : "lbs"
+  )
 
   return {
     frameDimensions: {
@@ -402,8 +435,21 @@ export function buildExampleImport(genioxType: number = 10): SheetImportResult {
     baseframeLengthMm: 152.8 * INCH_TO_MM,
     casingSectionLengthsIn: [107.9, 44.9],
     componentSegmentLengthsIn: [7.9, 7.9, 7.9, 19.7, 11.8, 31.5, 11.8, 7.9, 15.7, 27.6],
+    componentSegments: [
+      { lengthIn: 7.9, type: "filter" },
+      { lengthIn: 7.9, type: "coil" },
+      { lengthIn: 7.9, type: "coil" },
+      { lengthIn: 19.7, type: "electric_heat" },
+      { lengthIn: 11.8, type: "coil" },
+      { lengthIn: 31.5, type: "inspection" },
+      { lengthIn: 11.8, type: "coil" },
+      { lengthIn: 7.9, type: "special" },
+      { lengthIn: 15.7, type: "control_box" },
+      { lengthIn: 27.6, type: "fan" },
+    ],
     weatherHoodLengthIn: 17.9,
     frameWidthIn: 44.6,
+    sourceUnit: "in",
   }
 
   const importData = buildWeightImportFromSheets(weightTable, layout, genioxType)

@@ -14,6 +14,34 @@ export const getLoadMagnitudeInN = (load: Load): number => {
   return load.magnitude // Default to N
 }
 
+/**
+ * Total weight (N) for a distributed load.
+ * - unit kg/lbs: magnitude is total component weight
+ * - unit N: magnitude is pressure (N/m²) × footprint area
+ */
+export const getDistributedLoadTotalWeightN = (load: Load): number => {
+  if (load.type !== "Distributed Load") {
+    return getLoadMagnitudeInN(load)
+  }
+
+  const magnitudeInN = getLoadMagnitudeInN(load)
+
+  if (load.unit === "kg" || load.unit === "lbs") {
+    return magnitudeInN
+  }
+
+  if (load.loadLength && load.loadWidth) {
+    const areaM2 = (load.loadLength * load.loadWidth) / 1_000_000
+    return magnitudeInN * areaM2
+  }
+
+  if (load.area) {
+    return magnitudeInN * load.area
+  }
+
+  return magnitudeInN
+}
+
 // Convert N to kg
 export const nToKg = (n: number): number => n / 9.81
 

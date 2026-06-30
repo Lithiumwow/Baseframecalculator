@@ -3,7 +3,7 @@ import type { Load, Section, Results } from "../types"
 import type { MaterialProperties } from "../types"
 import { standardMaterials } from "../constants"
 import { validateNumber, validatePositive } from "../utils/validation"
-import { getLoadMagnitudeInN, convertSectionWeightToN } from "../utils/conversions"
+import { getLoadMagnitudeInN, convertSectionWeightToN, getDistributedLoadTotalWeightN } from "../utils/conversions"
 
 interface UseBeamCalculationsParams {
   analysisType: "Simple Beam" | "Base Frame"
@@ -97,27 +97,14 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
     // Calculate total applied loads (convert to N if needed)
     let totalAppliedLoad = 0
     loads.forEach((load) => {
-      const magnitudeInN = getLoadMagnitudeInN(load)
       if (load.type === "Distributed Load") {
-        // For distributed loads: magnitude (N/m²) × area (m²) = total load (N)
-        let loadArea = 0
-        if (analysisType === "Base Frame" && load.loadLength && load.loadWidth) {
-          // For baseframe: use length × width
-          loadArea = (load.loadLength * load.loadWidth) / 1_000_000 // Convert mm² to m²
-        } else if (load.area) {
-          // For simple beam: use area directly
-          loadArea = load.area
-        }
-        if (loadArea > 0) {
-          totalAppliedLoad += magnitudeInN * loadArea
-        }
+        totalAppliedLoad += getDistributedLoadTotalWeightN(load)
       } else if (load.type === "Uniform Load" && load.endPosition) {
-        // For uniform loads: magnitude (N/m) × length (m) = total load (N)
+        const magnitudeInN = getLoadMagnitudeInN(load)
         const loadLength = (load.endPosition - load.startPosition) / 1000
         totalAppliedLoad += magnitudeInN * loadLength
       } else {
-        // For point loads: magnitude is already in Newtons
-        totalAppliedLoad += magnitudeInN
+        totalAppliedLoad += getLoadMagnitudeInN(load)
       }
     })
 
@@ -227,7 +214,6 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
 
       // Distribute each load to corners based on its position
       loads.forEach((load) => {
-        const magnitudeInN = getLoadMagnitudeInN(load)
         let loadWeight = 0
         let loadCenterX = 0
         let loadCenterY = frameWidthM / 2 // Default to center in width
@@ -237,27 +223,25 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
           let loadWidthMM = 0
           
           if (load.loadLength && load.loadWidth) {
-            // For baseframe: use length and width
             loadLengthMM = validatePositive(load.loadLength, 100)
             loadWidthMM = validatePositive(load.loadWidth, 100)
-            loadWeight = magnitudeInN * (loadLengthMM * loadWidthMM) / 1_000_000
-            // Load center position
-            loadCenterX = (load.startPosition + loadLengthMM / 2) / 1000 // Convert to meters
-            loadCenterY = (frameWidth - loadWidthMM / 2) / 1000 // Convert to meters, from top
+            loadWeight = getDistributedLoadTotalWeightN(load)
+            loadCenterX = (load.startPosition + loadLengthMM / 2) / 1000
+            loadCenterY = (frameWidth - loadWidthMM / 2) / 1000
           } else if (load.area) {
-            // For simple beam compatibility: assume square load
             const sideLengthMM = Math.sqrt(validatePositive(load.area, 1)) * 1000
-            loadWeight = magnitudeInN * load.area
+            loadWeight = getDistributedLoadTotalWeightN(load)
             loadCenterX = (load.startPosition + sideLengthMM / 2) / 1000
             loadCenterY = frameWidthM / 2
           } else {
             return // Skip invalid load
           }
         } else if (load.type === "Point Load") {
-          loadWeight = magnitudeInN
+          loadWeight = getLoadMagnitudeInN(load)
           loadCenterX = load.startPosition / 1000
           loadCenterY = frameWidthM / 2
         } else if (load.type === "Uniform Load" && load.endPosition) {
+          const magnitudeInN = getLoadMagnitudeInN(load)
           const loadLengthM = (load.endPosition - load.startPosition) / 1000
           loadWeight = magnitudeInN * loadLengthM
           loadCenterX = (load.startPosition + load.endPosition) / 2000

@@ -270,30 +270,31 @@ export function convertImportedComponents(
       targetSection = sections[imported.sectionIndex]
     }
 
-    // Calculate absolute position
-    let absolutePosition = imported.position
+    // Calculate absolute start position (mm from frame origin)
+    let absoluteStart = imported.position
     if (targetSection) {
-      absolutePosition = targetSection.startPosition + imported.position
+      absoluteStart = targetSection.startPosition + imported.position
     }
 
-    // Determine load type
-    const loadType = imported.loadType || "Point Load"
+    const loadType = imported.loadType || "Distributed Load"
+    const defaultUnit = imported.weightUnit || "lbs"
 
     const load: Load = {
       type: loadType,
       magnitude: imported.weight,
-      startPosition: absolutePosition,
-      unit: imported.weightUnit || "kg",
+      startPosition: absoluteStart,
+      unit: defaultUnit,
       name: imported.name || `Component ${index + 1}`,
       sectionId: targetSection?.id,
     }
 
-    // Add type-specific properties
     if (loadType === "Distributed Load") {
       load.loadLength = imported.loadLength || 500
       load.loadWidth = imported.loadWidth || frameWidth
     } else if (loadType === "Uniform Load" && imported.loadLength) {
-      load.endPosition = absolutePosition + imported.loadLength
+      load.endPosition = absoluteStart + imported.loadLength
+    } else if (loadType === "Point Load") {
+      // position field is already center for legacy point loads
     } else if (imported.area) {
       load.area = imported.area
     }

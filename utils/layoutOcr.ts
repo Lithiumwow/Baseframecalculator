@@ -10,6 +10,8 @@ import {
   parseLengthFromText,
   parseLengthFromValue,
 } from "./lengthUnits"
+import type { LayoutSegment } from "./layoutSymbols"
+import { analyzeLayoutDrawing } from "./layoutIconDetection"
 
 export { INCH_TO_MM }
 
@@ -18,7 +20,10 @@ export interface ParsedLayout {
   baseframeLengthIn: number
   baseframeLengthMm: number
   casingSectionLengthsIn: number[]
+  /** Ordered segment lengths (excludes hood/end cap when detected) */
   componentSegmentLengthsIn: number[]
+  /** Segments with icon-mapped component types */
+  componentSegments: LayoutSegment[]
   weatherHoodLengthIn: number
   frameWidthIn: number | null
   /** Detected source unit from drawing */
@@ -48,10 +53,9 @@ function findCasingSectionLengths(valuesIn: number[], baseframeLength: number): 
 
 function findComponentSegments(valuesIn: number[], casingLengths: number[]): number[] {
   const casingTotal = casingLengths.reduce((a, b) => a + b, 0)
-  const exclude = new Set([...casingLengths, casingTotal])
-  return valuesIn
-    .filter((v) => v >= 2 && v <= 35 && !exclude.has(v))
-    .sort((a, b) => a - b)
+  const exclude = new Set([...casingLengths, casingTotal, 44.6, 31.6, 22.9, 8.6])
+  // Preserve appearance order — repeated values (e.g. 7.9) are distinct segments
+  return valuesIn.filter((v) => v >= 2 && v <= 35 && !exclude.has(v))
 }
 
 function findWeatherHoodLength(valuesIn: number[]): number {
@@ -90,6 +94,10 @@ export function parseLayoutText(ocrText: string): ParsedLayout {
     baseframeLengthMm: baseframeLengthIn * INCH_TO_MM,
     casingSectionLengthsIn,
     componentSegmentLengthsIn,
+    componentSegments: componentSegmentLengthsIn.map((lengthIn) => ({
+      lengthIn,
+      type: "unknown" as const,
+    })),
     weatherHoodLengthIn,
     frameWidthIn,
     sourceUnit,
@@ -104,8 +112,34 @@ export async function processLayoutImage(
   onProgress?: (progress: number) => void
 ): Promise<ParsedLayout> {
   const preprocessed = await preprocessImageForOCR(imageFile)
-  const { text } = await extractTextFromImage(preprocessed, onProgress)
-  return parseLayoutText(text)
+  const { text, words } = await extractTextFromImage(preprocessed, onProgress)
+  const base = parseLayoutText(text)
+
+  const exclude = new Set([
+    base.baseframeLengthIn,
+    ...base.casingSectionLengthsIn,
+    base.casingSectionLengthsIn.reduce((a, b) => a + b, 0),
+    base.frameWidthIn ?? 0,
+    44.6,
+    31.6,
+    22.9,
+    8.6,
+  ])
+
+  const componentSegments = await analyzeLayoutDrawing(
+    preprocessed,
+    text,
+    words,
+    exclude,
+    base.weatherHoodLengthIn,
+    2.0
+  )
+
+  return {
+    ...base,
+    componentSegments,
+    componentSegmentLengthsIn: componentSegments.map((s) => s.lengthIn),
+  }
 }
 
 /** Convert inches to mm for app storage */

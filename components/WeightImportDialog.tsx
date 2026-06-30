@@ -404,6 +404,12 @@ export function WeightImportDialog({
             </Button>
           )}
 
+          {importType === "ocr" && (
+            <p className="text-xs text-muted-foreground">
+              Layout icons map to weights: fan, electric heat, coils, control box, filter (I), inspection/empty.
+            </p>
+          )}
+
           {error && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
@@ -480,10 +486,24 @@ export function WeightImportDialog({
                     ))}
                   </div>
 
-                  <div className="mt-2 max-h-32 overflow-y-auto text-xs space-y-1">
+                  <div className="mt-2 max-h-40 overflow-y-auto text-xs space-y-1">
                     {preview.loads.map((load, idx) => (
                       <div key={idx} className="pl-2 border-l-2 border-green-200">
-                        {load.name}: {load.magnitude} {load.unit} @ {Math.round(load.startPosition)} mm
+                        <strong>{load.name}</strong>
+                        {load.type === "Distributed Load" ? (
+                          <>
+                            {" "}
+                            — {load.magnitude} {load.unit || "lbs"} distributed load, start{" "}
+                            {Math.round(load.startPosition)} mm, length{" "}
+                            {Math.round(load.loadLength || 0)} mm
+                            {load.loadWidth ? ` × ${Math.round(load.loadWidth)} mm` : ""}
+                          </>
+                        ) : (
+                          <>
+                            {" "}
+                            — {load.magnitude} {load.unit} @ {Math.round(load.startPosition)} mm
+                          </>
+                        )}
                       </div>
                     ))}
                   </div>
