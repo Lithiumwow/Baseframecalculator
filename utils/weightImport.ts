@@ -355,7 +355,6 @@ export function generateLoadsFromTotalWeights(
  * 4, Baseframe Length 2941 mm, , , 127
  */
 import {
-  INCH_TO_MM,
   parseLengthFromText,
 } from "./lengthUnits"
 
