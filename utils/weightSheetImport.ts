@@ -1,0 +1,412 @@
+/**
+ * Build complete WeightImportData JSON from weight table + layout sheet OCR.
+ */
+
+import type {
+  WeightImportData,
+  WeightImportSection,
+  WeightImportComponent,
+} from "./weightImport"
+import { getGenioxFrameWidth } from "./genioxDimensions"
+import type { ParsedLayout } from "./layoutOcr"
+import { INCH_TO_MM } from "./layoutOcr"
+import { processWeightTableImage } from "./ocr"
+import { processLayoutImage } from "./layoutOcr"
+import { calculateCOG, buildCOGItemsFromImport, type COGResult } from "./cogCalculation"
+import type { Section, Load } from "../types"
+import { convertImportedSections, convertImportedComponents } from "./weightImport"
+
+export interface ParsedWeightRow {
+  sectionNo: number
+  sectionCode: string
+  functionCode: string
+  functionWeight: number
+  sectionWeight: number
+}
+
+export interface ParsedWeightTable {
+  casingSections: Array<{
+    sectionNo: number
+    casingLengthIn: number
+    sectionWeightLb: number
+    components: Array<{ name: string; weightLb: number }>
+  }>
+  baseframeLengthIn: number
+  baseframeWeightLb: number
+  otherComponentsLb: number
+  unitTotalLb: number
+  weightUnit: "lbs" | "kg"
+}
+
+export interface SheetImportResult {
+  importData: WeightImportData
+  json: string
+  cog: COGResult
+  frameLength: number
+  frameWidth: number
+  totalRoofWeight: number
+  totalRoofWeightUnit: "lbs" | "kg"
+  sections: Section[]
+  loads: Load[]
+}
+
+const SKIP_COMPONENTS = new Set(["casing"])
+const MIN_COMPONENT_WEIGHT = 0.5
+
+/**
+ * Parse structured rows from weight table OCR CSV text.
+ */
+export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable {
+  const lines = tableCsv.split("\n").filter((l) => l.trim())
+  const rows: ParsedWeightRow[] = []
+  let currentSectionNo = 0
+  let weightUnit: "lbs" | "kg" = "lbs"
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (i === 0 && line.toLowerCase().includes("lb")) weightUnit = "lbs"
+    if (i === 0 && line.toLowerCase().includes("kg") && !line.toLowerCase().includes("lb")) {
+      weightUnit = "kg"
+    }
+    if (line.toLowerCase().includes("section no")) continue
+
+    const parts = line.split(",").map((p) => p.trim())
+    if (parts.length < 2) continue
+
+    const sectionNoVal = parseInt(parts[0] || "0", 10)
+    if (sectionNoVal > 0) currentSectionNo = sectionNoVal
+
+    rows.push({
+      sectionNo: currentSectionNo,
+      sectionCode: parts[1] || "",
+      functionCode: parts[2] || "",
+      functionWeight: parseFloat((parts[3] || "0").replace(/[^\d.]/g, "")) || 0,
+      sectionWeight: parseFloat((parts[4] || "0").replace(/[^\d.]/g, "")) || 0,
+    })
+  }
+
+  const casingSections: ParsedWeightTable["casingSections"] = []
+  let baseframeLengthIn = 0
+  let baseframeWeightLb = 0
+  let otherComponentsLb = 0
+  let unitTotalLb = 0
+
+  let currentCasing: ParsedWeightTable["casingSections"][0] | null = null
+
+  for (const row of rows) {
+    const code = row.sectionCode.toLowerCase()
+    const func = row.functionCode.toLowerCase()
+
+    if (code.includes("casing length")) {
+      const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
+      const lengthIn = lengthMatch
+        ? lengthMatch[0].includes("mm")
+          ? parseFloat(lengthMatch[1]) / INCH_TO_MM
+          : parseFloat(lengthMatch[1])
+        : 0
+
+      currentCasing = {
+        sectionNo: row.sectionNo,
+        casingLengthIn: lengthIn,
+        sectionWeightLb: row.sectionWeight,
+        components: [],
+      }
+      casingSections.push(currentCasing)
+    } else if (code.includes("baseframe length")) {
+      const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
+      baseframeLengthIn = lengthMatch
+        ? lengthMatch[0].includes("mm")
+          ? parseFloat(lengthMatch[1]) / INCH_TO_MM
+          : parseFloat(lengthMatch[1])
+        : 0
+      baseframeWeightLb = row.sectionWeight
+      currentCasing = null
+    } else if (code.includes("other components")) {
+      otherComponentsLb = row.sectionWeight
+    } else if (func.includes("weight of unit")) {
+      unitTotalLb = row.sectionWeight
+    } else if (row.functionCode && row.functionWeight > 0 && currentCasing) {
+      currentCasing.components.push({
+        name: row.functionCode,
+        weightLb: row.functionWeight,
+      })
+    }
+  }
+
+  return {
+    casingSections,
+    baseframeLengthIn,
+    baseframeWeightLb,
+    otherComponentsLb,
+    unitTotalLb,
+    weightUnit,
+  }
+}
+
+/**
+ * Assign component positions from layout segment lengths.
+ */
+function assignComponentPositions(
+  casingSections: ParsedWeightTable["casingSections"],
+  layout: ParsedLayout
+): WeightImportComponent[] {
+  const components: WeightImportComponent[] = []
+  let segmentIndex = 0
+  let frameOffsetMm = 0
+
+  for (let sectionIdx = 0; sectionIdx < casingSections.length; sectionIdx++) {
+    const section = casingSections[sectionIdx]
+    const sectionLengthMm = section.casingLengthIn * INCH_TO_MM
+    let posInSectionMm = 0
+
+    const layoutSegments = layout.componentSegmentLengthsIn
+    let segmentsForSection = layoutSegments.slice(segmentIndex)
+
+    // Trim segments to fit section length
+    let segSum = 0
+    let segCount = 0
+    for (const seg of segmentsForSection) {
+      if (segSum + seg * INCH_TO_MM <= sectionLengthMm + 50) {
+        segSum += seg * INCH_TO_MM
+        segCount++
+      } else break
+    }
+    segmentsForSection = segmentsForSection.slice(0, Math.max(segCount, 1))
+    segmentIndex += segmentsForSection.length
+
+    let segIdx = 0
+    for (const comp of section.components) {
+      if (SKIP_COMPONENTS.has(comp.name.toLowerCase())) continue
+      if (comp.weightLb < MIN_COMPONENT_WEIGHT) continue
+
+      let positionInSectionMm: number
+
+      if (segIdx < segmentsForSection.length) {
+        const segLenMm = segmentsForSection[segIdx] * INCH_TO_MM
+        positionInSectionMm = posInSectionMm + segLenMm / 2
+        posInSectionMm += segLenMm
+        segIdx++
+      } else {
+        // Evenly distribute remaining components
+        const remaining = section.components.filter(
+          (c) =>
+            !SKIP_COMPONENTS.has(c.name.toLowerCase()) && c.weightLb >= MIN_COMPONENT_WEIGHT
+        ).length
+        const idx = section.components.indexOf(comp)
+        positionInSectionMm = (sectionLengthMm / (remaining + 1)) * (idx + 1)
+      }
+
+      components.push({
+        name: comp.name,
+        sectionIndex: sectionIdx,
+        position: positionInSectionMm,
+        weight: comp.weightLb,
+        weightUnit: "lbs",
+        loadType: "Point Load",
+      })
+    }
+
+    frameOffsetMm += sectionLengthMm
+  }
+
+  return components
+}
+
+/**
+ * Build full WeightImportData matching the JSON template format.
+ */
+export function buildWeightImportFromSheets(
+  weightTable: ParsedWeightTable,
+  layout: ParsedLayout,
+  genioxType: number
+): WeightImportData {
+  const frameLengthMm =
+    layout.baseframeLengthMm ||
+    weightTable.baseframeLengthIn * INCH_TO_MM ||
+    weightTable.casingSections.reduce((s, c) => s + c.casingLengthIn * INCH_TO_MM, 0)
+
+  const frameWidthMm = getGenioxFrameWidth(genioxType)
+  const unit = weightTable.weightUnit
+
+  const totalCasingLengthIn = weightTable.casingSections.reduce(
+    (s, c) => s + c.casingLengthIn,
+    0
+  )
+
+  let currentPosition = 0
+  const sections: WeightImportSection[] = weightTable.casingSections.map((cs, idx) => {
+    const lengthMm = cs.casingLengthIn * INCH_TO_MM
+    const lengthRatio =
+      totalCasingLengthIn > 0 ? cs.casingLengthIn / totalCasingLengthIn : 1
+
+    const casingShell = cs.components.find((c) => c.name.toLowerCase() === "casing")
+    const casingShellWeight = casingShell?.weightLb ?? 0
+
+    const section: WeightImportSection = {
+      name: `Section ${cs.sectionNo || idx + 1}`,
+      startPosition: currentPosition,
+      endPosition: currentPosition + lengthMm,
+      length: lengthMm,
+      casingWeight: casingShellWeight,
+      casingWeightUnit: unit,
+      baseframeWeight:
+        totalCasingLengthIn > 0
+          ? Math.round(weightTable.baseframeWeightLb * lengthRatio * 10) / 10
+          : 0,
+      baseframeWeightUnit: unit,
+      roofWeight: 0,
+      roofWeightUnit: unit,
+    }
+
+    currentPosition += lengthMm
+    return section
+  })
+
+  const components = assignComponentPositions(weightTable.casingSections, layout)
+
+  return {
+    frameDimensions: {
+      length: Math.round(frameLengthMm),
+      width: frameWidthMm,
+      units: "mm",
+    },
+    sections,
+    components,
+    totalWeights: {
+      roof: weightTable.otherComponentsLb,
+      baseframe: weightTable.baseframeWeightLb,
+      unit,
+    },
+  }
+}
+
+/**
+ * Full pipeline: OCR both sheets → build JSON → convert to app types → COG.
+ */
+export async function processWeightSheets(
+  layoutImage: File,
+  weightsImage: File,
+  genioxType: number,
+  onProgress?: (stage: string, progress: number) => void
+): Promise<SheetImportResult> {
+  onProgress?.("Reading layout drawing...", 10)
+  const layout = await processLayoutImage(layoutImage, (p) =>
+    onProgress?.("Reading layout drawing...", 10 + p * 0.35)
+  )
+
+  onProgress?.("Reading weights table...", 50)
+  const { formattedTable } = await processWeightTableImage(weightsImage, (p) =>
+    onProgress?.("Reading weights table...", 50 + p * 0.4)
+  )
+
+  onProgress?.("Building import data...", 92)
+  const weightTable = parseWeightTableStructured(formattedTable)
+  const importData = buildWeightImportFromSheets(weightTable, layout, genioxType)
+  const json = JSON.stringify(importData, null, 2)
+
+  const frameLength = importData.frameDimensions?.length || layout.baseframeLengthMm
+  const frameWidth = importData.frameDimensions?.width || getGenioxFrameWidth(genioxType)
+
+  const sections = convertImportedSections(importData.sections || [], frameLength)
+  const loads = convertImportedComponents(importData.components || [], sections, frameWidth)
+
+  const totalRoofWeight = weightTable.otherComponentsLb
+  const totalRoofWeightUnit = weightTable.weightUnit
+
+  const cogItems = buildCOGItemsFromImport(
+    sections,
+    loads,
+    frameWidth,
+    totalRoofWeight,
+    totalRoofWeightUnit
+  )
+  const cog = calculateCOG(cogItems, frameLength, frameWidth, totalRoofWeightUnit)
+
+  onProgress?.("Done", 100)
+
+  return {
+    importData,
+    json,
+    cog,
+    frameLength,
+    frameWidth,
+    totalRoofWeight,
+    totalRoofWeightUnit,
+    sections,
+    loads,
+  }
+}
+
+/**
+ * Build import from known example data (for testing without OCR).
+ */
+export function buildExampleImport(genioxType: number = 10): SheetImportResult {
+  const weightTable: ParsedWeightTable = {
+    casingSections: [
+      {
+        sectionNo: 1,
+        casingLengthIn: 107.9,
+        sectionWeightLb: 259,
+        components: [
+          { name: "Casing", weightLb: 95 },
+          { name: "Damper", weightLb: 21 },
+          { name: "Filter", weightLb: 16 },
+          { name: "Inspection section", weightLb: 0.2 },
+          { name: "Special function", weightLb: 2 },
+          { name: "Inspection section", weightLb: 0.2 },
+          { name: "Cooling coil", weightLb: 95 },
+          { name: "Inspection section", weightLb: 0.2 },
+          { name: "Heating coil", weightLb: 28 },
+        ],
+      },
+      {
+        sectionNo: 2,
+        casingLengthIn: 44.9,
+        sectionWeightLb: 168,
+        components: [
+          { name: "Casing", weightLb: 46 },
+          { name: "Control system", weightLb: 51 },
+          { name: "Fan", weightLb: 71 },
+        ],
+      },
+    ],
+    baseframeLengthIn: 152.8,
+    baseframeWeightLb: 356,
+    otherComponentsLb: 179,
+    unitTotalLb: 962,
+    weightUnit: "lbs",
+  }
+
+  const layout: ParsedLayout = {
+    baseframeLengthIn: 152.8,
+    baseframeLengthMm: 152.8 * INCH_TO_MM,
+    casingSectionLengthsIn: [107.9, 44.9],
+    componentSegmentLengthsIn: [7.9, 7.9, 7.9, 19.7, 11.8, 31.5, 11.8, 7.9, 15.7, 27.6],
+    weatherHoodLengthIn: 17.9,
+    frameWidthIn: 44.6,
+  }
+
+  const importData = buildWeightImportFromSheets(weightTable, layout, genioxType)
+  const json = JSON.stringify(importData, null, 2)
+  const frameLength = importData.frameDimensions?.length || 3881
+  const frameWidth = getGenioxFrameWidth(genioxType)
+  const sections = convertImportedSections(importData.sections || [], frameLength)
+  const loads = convertImportedComponents(importData.components || [], sections, frameWidth)
+
+  const cogItems = buildCOGItemsFromImport(sections, loads, frameWidth, 179, "lbs")
+  const cog = calculateCOG(cogItems, frameLength, frameWidth, "lbs")
+
+  return {
+    importData,
+    json,
+    cog,
+    frameLength,
+    frameWidth,
+    totalRoofWeight: 179,
+    totalRoofWeightUnit: "lbs",
+    sections,
+    loads,
+  }
+}
+
+export type { COGResult }

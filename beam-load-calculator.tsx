@@ -18,7 +18,9 @@ import { validateNumber, validatePositive } from "./utils/validation"
 import { BeamDiagram, FrameDiagram, CornerLoadsDiagram } from "./components/diagrams"
 import { HelpDialog } from "./components/HelpDialog"
 import { BeamCrossSectionImage } from "./components/BeamCrossSectionImage"
-import { WeightImportDialog } from "./components/WeightImportDialog"
+import { WeightImportDialog, type WeightImportResult } from "./components/WeightImportDialog"
+import type { COGResult } from "./utils/cogCalculation"
+import { calculateCOG, buildCOGItemsFromImport } from "./utils/cogCalculation"
 import { useBeamCalculations } from "./hooks/useBeamCalculations"
 import { useDiagramCalculations } from "./hooks/useDiagramCalculations"
 import { generatePDF } from "./utils/pdfGeneration"
@@ -68,6 +70,7 @@ export default function BeamLoadCalculator() {
     totalAppliedLoad: 0,
   })
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
+  const [cogResult, setCogResult] = useState<COGResult | null>(null)
 
   // Use calculation hooks
   const { calculateResults } = useBeamCalculations({
@@ -683,9 +686,37 @@ export default function BeamLoadCalculator() {
                 </span>
                 <div className="flex gap-2">
                   <WeightImportDialog
-                    onImport={(importedSections, importedLoads) => {
-                      setSections(importedSections)
-                      setLoads(importedLoads)
+                    onImport={(result: WeightImportResult) => {
+                      if (result.frameLength) setFrameLength(result.frameLength)
+                      if (result.frameWidth) setFrameWidth(result.frameWidth)
+                      if (result.totalRoofWeight !== undefined) {
+                        setTotalRoofWeight(result.totalRoofWeight)
+                        if (result.totalRoofWeightUnit) {
+                          setTotalRoofWeightUnit(result.totalRoofWeightUnit)
+                        }
+                      }
+                      setSections(result.sections)
+                      setLoads(result.loads)
+                      if (result.cog) {
+                        setCogResult(result.cog)
+                      } else {
+                        const fl = result.frameLength || frameLength
+                        const fw = result.frameWidth || frameWidth
+                        setCogResult(
+                          calculateCOG(
+                            buildCOGItemsFromImport(
+                              result.sections,
+                              result.loads,
+                              fw,
+                              result.totalRoofWeight,
+                              result.totalRoofWeightUnit
+                            ),
+                            fl,
+                            fw,
+                            result.totalRoofWeightUnit || "lbs"
+                          )
+                        )
+                      }
                     }}
                     frameLength={frameLength}
                     frameWidth={frameWidth}
@@ -1508,6 +1539,28 @@ export default function BeamLoadCalculator() {
                   </div>
                   <div className="text-sm text-gray-600 mt-1">Max Corner Reaction</div>
                 </div>
+              )}
+              {analysisType === "Base Frame" && cogResult && (
+                <>
+                  <div className="text-center p-4 bg-amber-50 rounded-lg border border-amber-200">
+                    <div className="text-2xl font-bold text-amber-700">
+                      {cogResult.cogX.toFixed(0)} mm
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      ({(cogResult.cogXRatio * 100).toFixed(1)}% of length)
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">COG / COM — X</div>
+                  </div>
+                  <div className="text-center p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+                    <div className="text-2xl font-bold text-yellow-700">
+                      {cogResult.cogY.toFixed(0)} mm
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      ({(cogResult.cogYRatio * 100).toFixed(1)}% of width)
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">COG / COM — Y</div>
+                  </div>
+                </>
               )}
             </div>
           </CardContent>
