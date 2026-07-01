@@ -11,9 +11,9 @@ import {
   parseLengthFromValue,
 } from "./lengthUnits"
 import type { LayoutSegment } from "./layoutSymbols"
-import { analyzeLayoutDrawing } from "./layoutIconDetection"
+import { analyzeLayoutDrawing, type LayoutOrientation } from "./layoutIconDetection"
 
-export { INCH_TO_MM }
+export { INCH_TO_MM, type LayoutOrientation }
 
 export interface ParsedLayout {
   /** All lengths stored in inches internally */
@@ -28,6 +28,8 @@ export interface ParsedLayout {
   frameWidthIn: number | null
   /** Detected source unit from drawing */
   sourceUnit: "in" | "mm"
+  /** vertical = single-deck side view; horizontal = dual-deck cross-section */
+  layoutOrientation: LayoutOrientation
 }
 
 function findBaseframeLength(valuesIn: number[]): number {
@@ -101,6 +103,7 @@ export function parseLayoutText(ocrText: string): ParsedLayout {
     weatherHoodLengthIn,
     frameWidthIn,
     sourceUnit,
+    layoutOrientation: "vertical" as LayoutOrientation,
   }
 }
 
@@ -126,7 +129,7 @@ export async function processLayoutImage(
     8.6,
   ])
 
-  const componentSegments = await analyzeLayoutDrawing(
+  const { segments: componentSegments, orientation } = await analyzeLayoutDrawing(
     preprocessed,
     text,
     words,
@@ -139,6 +142,7 @@ export async function processLayoutImage(
     ...base,
     componentSegments,
     componentSegmentLengthsIn: componentSegments.map((s) => s.lengthIn),
+    layoutOrientation: orientation,
   }
 }
 

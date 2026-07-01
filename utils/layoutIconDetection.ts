@@ -4,6 +4,14 @@
  */
 
 import type { LayoutComponentType, LayoutSegment } from "./layoutSymbols"
+import { STANDARD_LAYOUT_SEGMENTS_IN } from "./layoutSegmentDefaults"
+import {
+  detectLayoutOrientation,
+  analyzeDualDeckLayout,
+  type LayoutOrientation,
+} from "./dualDeckLayout"
+
+export type { LayoutOrientation }
 
 interface OCRWord {
   text: string
@@ -132,6 +140,7 @@ function classifyStrip(metrics: StripMetrics): LayoutComponentType {
   if (blueRatio > 0.06 && metrics.blue > metrics.red) return "fan"
 
   // Filter bay: green hatch in some drawings
+  if (greenRatio > 0.08) return "heat_recovery"
   if (greenRatio > 0.04) return "filter"
 
   if (redRatio > 0.015) {
@@ -240,12 +249,23 @@ export async function analyzeLayoutDrawing(
   excludeValues: Set<number>,
   weatherHoodIn: number,
   endCapIn: number
-): Promise<LayoutSegment[]> {
+): Promise<{ segments: LayoutSegment[]; orientation: LayoutOrientation }> {
   const img = await loadImage(imageFile)
+  const orientation = detectLayoutOrientation(words, img.width, img.height)
+
+  if (orientation === "horizontal") {
+    const dualSegments = await analyzeDualDeckLayout(imageFile, words, excludeValues)
+    if (dualSegments.length > 0) {
+      return { segments: dualSegments, orientation }
+    }
+  }
 
   let lengthsIn = extractDimensionsInSpatialOrder(words, img.width, excludeValues)
   if (lengthsIn.length < 4) {
     lengthsIn = extractDimensionsFromTextInOrder(ocrText, excludeValues)
+  }
+  if (orientation !== "horizontal" && lengthsIn.length < STANDARD_LAYOUT_SEGMENTS_IN.length - 2) {
+    lengthsIn = [...STANDARD_LAYOUT_SEGMENTS_IN]
   }
 
   const dimensionWords = words.filter((w) => {
@@ -261,8 +281,10 @@ export async function analyzeLayoutDrawing(
     types = []
   }
 
-  // Pad types array to match lengths
   while (types.length < lengthsIn.length) types.push("unknown")
 
-  return buildLayoutSegments(lengthsIn, types, weatherHoodIn, endCapIn)
+  return {
+    segments: buildLayoutSegments(lengthsIn, types, weatherHoodIn, endCapIn),
+    orientation: "vertical",
+  }
 }

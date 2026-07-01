@@ -29,7 +29,13 @@ import {
   matchComponentsToSegments,
   inferKindFromWeightName,
   layoutTypeLabel,
+  type WeightComponentKind,
 } from "./layoutSymbols"
+import {
+  defaultLengthInForKind,
+  segmentInchesToMm,
+  standardLayoutSegments,
+} from "./layoutSegmentDefaults"
 
 export interface ParsedWeightRow {
   sectionNo: number
@@ -54,6 +60,26 @@ export interface SheetImportResult {
 }
 
 const SKIP_COMPONENTS = new Set<string>() // all components become distributed loads
+
+/** Combine components in the same bay (stacked decks or shared inlet) into one distributed load. */
+function mergeBayLoads(components: WeightImportComponent[]): WeightImportComponent[] {
+  const merged = new Map<string, WeightImportComponent>()
+
+  for (const comp of components) {
+    const key = `${comp.sectionIndex}|${Math.round(comp.position)}|${Math.round(comp.loadLength ?? 0)}`
+    const existing = merged.get(key)
+    if (existing) {
+      existing.weight = Math.round((existing.weight + comp.weight) * 100) / 100
+      if (!existing.name.includes(comp.name)) {
+        existing.name = `${existing.name} + ${comp.name}`
+      }
+    } else {
+      merged.set(key, { ...comp })
+    }
+  }
+
+  return Array.from(merged.values())
+}
 
 /** Sort by section number and resolve casing length (longer section = Section 1). */
 function getOrderedCasingSections(casingSections: ParsedWeightTable["casingSections"]) {
@@ -201,12 +227,18 @@ function assignComponentLoads(
   const components: WeightImportComponent[] = []
 
   const allSegments =
-    layout.componentSegments?.length > 0
+    layout.layoutOrientation === "horizontal" && layout.componentSegments?.length > 0
       ? layout.componentSegments
-      : layout.componentSegmentLengthsIn.map((lengthIn) => ({
-          lengthIn,
-          type: "unknown" as const,
-        }))
+      : layout.componentSegments?.length > 0
+        ? layout.componentSegments
+        : layout.componentSegmentLengthsIn.length > 0
+          ? layout.componentSegmentLengthsIn.map((lengthIn) => ({
+              lengthIn,
+              type: "unknown" as const,
+            }))
+          : layout.layoutOrientation === "horizontal"
+            ? []
+            : standardLayoutSegments()
 
   const orderedSections = getOrderedCasingSections(casingSections)
 
@@ -251,26 +283,29 @@ function assignComponentLoads(
       if (kind === "casing") {
         loadLengthMm = sectionLengthMm
         positionMm = 0
-      } else if (assignment && assignment.segmentIndex >= 0) {
-        loadLengthMm = inchesToMm(assignment.segment.lengthIn)
+      } else       if (assignment && assignment.segmentIndex >= 0) {
+        loadLengthMm = segmentInchesToMm(assignment.segment.lengthIn)
         positionMm = assignment.positionInSectionMm
-        if (assignment.segment.type !== "unknown") {
+        const stacked = assignment.segment.stackedTypes?.filter((t) => t !== "unknown") ?? []
+        if (stacked.length > 1) {
+          displayName = `${comp.name} (${stacked.map(layoutTypeLabel).join(" + ")})`
+        } else if (assignment.segment.type !== "unknown") {
           displayName = `${comp.name} (${layoutTypeLabel(assignment.segment.type)})`
         }
       } else if (fallbackSegIdx < sectionSegments.length) {
-        loadLengthMm = inchesToMm(sectionSegments[fallbackSegIdx].lengthIn)
+        loadLengthMm = segmentInchesToMm(sectionSegments[fallbackSegIdx].lengthIn)
         positionMm = fallbackPosMm
         fallbackPosMm += loadLengthMm
         fallbackSegIdx++
       } else {
-        const remaining = sectionComponents.length - compIdx
-        loadLengthMm = Math.max((sectionLengthMm - fallbackPosMm) / Math.max(remaining, 1), 50)
+        const defaultIn = defaultLengthInForKind(kind)
+        loadLengthMm = segmentInchesToMm(defaultIn)
         positionMm = fallbackPosMm
         fallbackPosMm += loadLengthMm
       }
 
       if (positionMm + loadLengthMm > sectionLengthMm + 1) {
-        loadLengthMm = Math.max(sectionLengthMm - positionMm, 50)
+        loadLengthMm = Math.max(sectionLengthMm - positionMm, segmentInchesToMm(2))
       }
 
       components.push({
@@ -286,7 +321,7 @@ function assignComponentLoads(
     })
   }
 
-  return components
+  return mergeBayLoads(components)
 }
 
 /**
@@ -535,6 +570,7 @@ export function buildExampleImport(genioxType: number = 10): SheetImportResult {
     weatherHoodLengthIn: 17.9,
     frameWidthIn: 44.6,
     sourceUnit: "in",
+    layoutOrientation: "vertical",
   }
 
   const importData = buildWeightImportFromSheets(weightTable, layout, genioxType)

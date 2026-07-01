@@ -11,6 +11,8 @@
  * - special: "+" or special-function marker
  */
 
+import { defaultLengthInForKind } from "./layoutSegmentDefaults"
+
 export type LayoutComponentType =
   | "fan"
   | "electric_heat"
@@ -20,11 +22,15 @@ export type LayoutComponentType =
   | "damper"
   | "inspection"
   | "special"
+  | "heat_recovery"
   | "unknown"
 
 export interface LayoutSegment {
   lengthIn: number
   type: LayoutComponentType
+  /** Top + bottom deck types when dual-deck bays stack components */
+  stackedTypes?: LayoutComponentType[]
+  isStackedBay?: boolean
   typeConfidence?: number
 }
 
@@ -40,10 +46,20 @@ export function inferKindFromWeightName(name: string): WeightComponentKind | nul
   if (n.includes("damper")) return "damper"
   if (n.includes("inspection")) return "inspection"
   if (n.includes("special")) return "special"
+  if (n.includes("rotary") || n.includes("heat exchang") || n.includes("recuperat")) {
+    return "heat_recovery"
+  }
   if (n.includes("electric") && n.includes("heat")) return "electric_heat"
   if (n.includes("heating coil") || n.includes("heating")) return "coil"
   if (n.includes("cooling coil") || n.includes("coil")) return "coil"
   return null
+}
+
+/** Types present in a layout segment (primary + stacked decks). */
+export function segmentLayoutTypes(seg: LayoutSegment): LayoutComponentType[] {
+  const stacked = seg.stackedTypes?.filter((t) => t !== "unknown") ?? []
+  if (stacked.length > 0) return stacked
+  return seg.type !== "unknown" ? [seg.type] : []
 }
 
 /** Whether a layout segment type can carry this weight-table component. */
@@ -59,6 +75,12 @@ export function segmentMatchesWeightKind(
   if (weightKind === "special" && (segmentType === "special" || segmentType === "inspection"))
     return true
   return false
+}
+
+/** Match component kind against a segment (including stacked deck types). */
+export function segmentMatchesComponentKind(seg: LayoutSegment, kind: WeightComponentKind): boolean {
+  if (kind === "casing") return false
+  return segmentLayoutTypes(seg).some((t) => segmentMatchesWeightKind(t, kind))
 }
 
 /** Human-readable label for UI preview. */
@@ -80,6 +102,8 @@ export function layoutTypeLabel(type: LayoutComponentType): string {
       return "Inspection / empty"
     case "special":
       return "Special function"
+    case "heat_recovery":
+      return "Heat recovery"
     default:
       return "Component"
   }
@@ -130,6 +154,8 @@ export function matchComponentsToSegments(
 ): Map<number, SegmentAssignment> {
   const assignments = new Map<number, SegmentAssignment>()
   const usedSegments = new Set<number>()
+  /** Kinds already placed on a stacked bay segment */
+  const segmentAssignedKinds = new Map<number, Set<WeightComponentKind>>()
   /** Damper + filter share the same inlet bay segment */
   let filterBaySegment: number | null = null
 
@@ -139,6 +165,38 @@ export function matchComponentsToSegments(
     return start
   })
 
+  const maxSlotsOnSegment = (seg: LayoutSegment): number => {
+    if (seg.isStackedBay && seg.stackedTypes) {
+      return seg.stackedTypes.filter((t) => t !== "unknown").length
+    }
+    return 1
+  }
+
+  const canUseSegment = (segIdx: number, kind: WeightComponentKind, seg: LayoutSegment): boolean => {
+    if (!segmentMatchesComponentKind(seg, kind)) return false
+
+    const slots = maxSlotsOnSegment(seg)
+    if (slots > 1 || seg.isStackedBay) {
+      const assigned = segmentAssignedKinds.get(segIdx) ?? new Set()
+      if (assigned.has(kind)) return false
+      return assigned.size < slots
+    }
+
+    return !usedSegments.has(segIdx)
+  }
+
+  const markSegmentUsed = (segIdx: number, kind: WeightComponentKind, seg: LayoutSegment) => {
+    const slots = maxSlotsOnSegment(seg)
+    if (slots > 1 || seg.isStackedBay) {
+      const assigned = segmentAssignedKinds.get(segIdx) ?? new Set()
+      assigned.add(kind)
+      segmentAssignedKinds.set(segIdx, assigned)
+      if (assigned.size >= slots) usedSegments.add(segIdx)
+    } else {
+      usedSegments.add(segIdx)
+    }
+  }
+
   const findSegment = (
     kind: WeightComponentKind,
     startAt: number
@@ -146,14 +204,22 @@ export function matchComponentsToSegments(
     if (kind === "filter" && filterBaySegment !== null) return filterBaySegment
 
     for (let i = startAt; i < sectionSegments.length; i++) {
-      if (usedSegments.has(i)) continue
-      if (segmentMatchesWeightKind(sectionSegments[i].type, kind)) {
+      if (!canUseSegment(i, kind, sectionSegments[i])) continue
+      if (segmentMatchesComponentKind(sectionSegments[i], kind)) {
+        if (kind === "damper" || kind === "filter") filterBaySegment = i
+        return i
+      }
+    }
+    const targetIn = defaultLengthInForKind(kind)
+    for (let i = startAt; i < sectionSegments.length; i++) {
+      if (!canUseSegment(i, kind, sectionSegments[i])) continue
+      if (Math.abs(sectionSegments[i].lengthIn - targetIn) < 1.5) {
         if (kind === "damper" || kind === "filter") filterBaySegment = i
         return i
       }
     }
     for (let i = 0; i < sectionSegments.length; i++) {
-      if (usedSegments.has(i)) continue
+      if (!canUseSegment(i, kind, sectionSegments[i])) continue
       if (kind === "coil" && sectionSegments[i].type === "coil") return i
     }
     return null
@@ -182,14 +248,21 @@ export function matchComponentsToSegments(
     }
 
     if (segIdx !== null && segIdx >= 0) {
-      const sharedInlet = kind === "filter" && filterBaySegment === segIdx
-      if (!sharedInlet) {
-        usedSegments.add(segIdx)
-        segmentCursor = segIdx + 1
+      const seg = sectionSegments[segIdx]
+      const stackedSlot = maxSlotsOnSegment(seg) > 1 || seg.isStackedBay
+      const sharedInletBay =
+        (kind === "filter" || kind === "damper") && filterBaySegment === segIdx
+
+      if (kind) {
+        if (!sharedInletBay) {
+          markSegmentUsed(segIdx, kind, seg)
+          if (!stackedSlot) segmentCursor = segIdx + 1
+        }
       }
+
       assignments.set(compIdx, {
         segmentIndex: segIdx,
-        segment: sectionSegments[segIdx],
+        segment: seg,
         positionInSectionMm: segmentPositionsMm[segIdx],
       })
     }
