@@ -15,6 +15,9 @@ import {
   inferCasingLengthsIn,
   ensureComponentsFromRawText,
   normalizeSectionLengthOrder,
+  applyCanonicalCasingLengths,
+  getCanonicalCasingLengthsIn,
+  isValidCasingSectionLength,
 } from "./weightTableParser"
 import { processWeightTableImage } from "./ocr"
 import { processLayoutImage } from "./layoutOcr"
@@ -60,18 +63,15 @@ function getOrderedCasingSections(casingSections: ParsedWeightTable["casingSecti
 function resolveCasingLengthsIn(
   orderedSections: ParsedWeightTable["casingSections"],
   layoutLengthsIn: number[],
-  baseframeLengthIn: number
+  baseframeLengthIn: number,
+  rawText: string,
+  weightTable: ParsedWeightTable
 ): number[] {
-  const layoutSorted = [...layoutLengthsIn].filter((l) => l > 0).sort((a, b) => b - a)
-
-  return orderedSections.map((section, idx) => {
-    let len = section.casingLengthIn
-    if (baseframeLengthIn > 0 && len > 0 && Math.abs(len - baseframeLengthIn) < 1.5) {
-      len = 0
-    }
-    if (len > 0) return len
-    return layoutSorted[idx] || len
-  })
+  return getCanonicalCasingLengthsIn(
+    { ...weightTable, casingSections: orderedSections, baseframeLengthIn },
+    layoutLengthsIn,
+    rawText
+  )
 }
 
 /**
@@ -115,6 +115,20 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
   let currentCasing: ParsedWeightTable["casingSections"][0] | null = null
 
   for (const row of rows) {
+    if (row.sectionCode.toLowerCase().includes("baseframe length")) {
+      const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
+      if (lengthMatch) {
+        const parsed = parseLengthFromText(lengthMatch[0])
+        baseframeLengthIn = parsed?.inches ?? 0
+      } else {
+        const parsed = parseLengthFromText(row.sectionCode)
+        baseframeLengthIn = parsed?.inches ?? 0
+      }
+      baseframeWeightLb = row.sectionWeight
+    }
+  }
+
+  for (const row of rows) {
     const code = row.sectionCode.toLowerCase()
     const func = row.functionCode.toLowerCase()
 
@@ -127,6 +141,10 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
       } else {
         const parsed = parseLengthFromText(row.sectionCode)
         lengthIn = parsed?.inches ?? 0
+      }
+
+      if (baseframeLengthIn > 0 && !isValidCasingSectionLength(lengthIn, baseframeLengthIn)) {
+        continue
       }
 
       currentCasing = {
@@ -208,7 +226,9 @@ function assignComponentLoads(
     const sectionSegments = sectionSegmentGroups[sectionIdx] || []
 
     const sectionComponents = section.components.filter(
-      (c) => c.weightLb > 0 || c.name.toLowerCase().includes("inspection")
+      (c) =>
+        (c.weightLb > 0 || c.name.toLowerCase().includes("inspection")) &&
+        c.name.toLowerCase().trim() !== "casing"
     )
     const assignments = matchComponentsToSegments(
       sectionSegments,
@@ -275,13 +295,16 @@ function assignComponentLoads(
 export function buildWeightImportFromSheets(
   weightTable: ParsedWeightTable,
   layout: ParsedLayout,
-  genioxType: number
+  genioxType: number,
+  rawText: string = ""
 ): WeightImportData {
   const orderedSections = getOrderedCasingSections(weightTable.casingSections)
   const resolvedLengthsIn = resolveCasingLengthsIn(
     orderedSections,
     layout.casingSectionLengthsIn,
-    weightTable.baseframeLengthIn
+    weightTable.baseframeLengthIn,
+    rawText,
+    weightTable
   )
 
   const casingTotalMm = resolvedLengthsIn.reduce(
@@ -308,8 +331,8 @@ export function buildWeightImportFromSheets(
     const lengthRatio =
       totalCasingLengthIn > 0 ? lengthIn / totalCasingLengthIn : 1 / orderedSections.length
 
-    // Casing weight lives in Loads as distributed load — keep section shell at 0 to avoid double-count
-    const casingShellWeight = 0
+    const casingComp = cs.components.find((c) => c.name.toLowerCase().trim() === "casing")
+    const casingShellWeight = casingComp?.weightLb ?? 0
 
     const section: WeightImportSection = {
       name: `Section ${cs.sectionNo || idx + 1}`,
@@ -402,7 +425,11 @@ export async function processWeightSheets(
   )
 
   weightTable = ensureComponentsFromRawText(weightTable, rawText)
-  weightTable = normalizeSectionLengthOrder(weightTable)
+  weightTable = applyCanonicalCasingLengths(
+    weightTable,
+    casingLengthsForMerge,
+    rawText
+  )
 
   if (isEmptyWeightTable(weightTable)) {
     throw new Error(
@@ -412,7 +439,7 @@ export async function processWeightSheets(
     )
   }
 
-  const importData = buildWeightImportFromSheets(weightTable, layout, genioxType)
+  const importData = buildWeightImportFromSheets(weightTable, layout, genioxType, rawText)
   const json = JSON.stringify(importData, null, 2)
 
   const frameLength = importData.frameDimensions?.length || layout.baseframeLengthMm

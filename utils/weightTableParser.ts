@@ -82,24 +82,6 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
   let currentSection: ParsedWeightTable["casingSections"][0] | null = null
   let currentSectionNo = 0
 
-  // Full-text patterns for multi-column rows collapsed onto one line
-  const casingHeaderRe =
-    /(?:^|\s)(\d)\s+Casing\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?(?:\s+\S+)*?\s+(\d+(?:\.\d+)?)/gi
-  let m
-  while ((m = casingHeaderRe.exec(text)) !== null) {
-    const sectionNo = parseInt(m[1], 10)
-    if (!result.casingSections.find((s) => s.sectionNo === sectionNo)) {
-      const lengthText = `Casing Length ${m[2]} ${m[3] || "in"}`
-      const parsed = parseLengthFromText(lengthText)
-      result.casingSections.push({
-        sectionNo,
-        casingLengthIn: parsed?.inches ?? parseLengthFromValue(parseNum(m[2]), lengthText).inches,
-        sectionWeightLb: parseNum(m[4]),
-        components: [],
-      })
-    }
-  }
-
   const baseframeRe =
     /Baseframe\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?[\s\S]{0,80}?(\d+(?:\.\d+)?)\s*(?:lb)?/i
   const baseframeMatch = text.match(baseframeRe)
@@ -109,6 +91,28 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
     result.baseframeLengthIn =
       parsed?.inches ?? parseLengthFromValue(parseNum(baseframeMatch[1]), lengthText).inches
     result.baseframeWeightLb = parseNum(baseframeMatch[3])
+  }
+
+  // Full-text patterns for multi-column rows collapsed onto one line
+  const casingHeaderRe =
+    /(?:^|\s)(\d)\s+Casing\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?(?:\s+\S+)*?\s+(\d+(?:\.\d+)?)/gi
+  let m
+  while ((m = casingHeaderRe.exec(text)) !== null) {
+    const sectionNo = parseInt(m[1], 10)
+    if (!result.casingSections.find((s) => s.sectionNo === sectionNo)) {
+      const lengthText = `Casing Length ${m[2]} ${m[3] || "in"}`
+      const parsed = parseLengthFromText(lengthText)
+      const lengthIn = parsed?.inches ?? parseLengthFromValue(parseNum(m[2]), lengthText).inches
+      if (!isValidCasingSectionLength(lengthIn, result.baseframeLengthIn)) {
+        continue
+      }
+      result.casingSections.push({
+        sectionNo,
+        casingLengthIn: lengthIn,
+        sectionWeightLb: parseNum(m[4]),
+        components: [],
+      })
+    }
   }
 
   const otherRe = /Other\s+components[\s\S]{0,40}?(\d+(?:\.\d+)?)/i
@@ -134,6 +138,10 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 
       const parsed = parseLengthFromText(line)
       const lengthIn = parsed?.inches ?? 0
+
+      if (!isValidCasingSectionLength(lengthIn, result.baseframeLengthIn)) {
+        continue
+      }
 
       const nums = line.match(/\d+(?:\.\d+)?/g) || []
       const sectionWeight = nums.length > 0 ? parseNum(nums[nums.length - 1]) : 0
@@ -423,6 +431,130 @@ function lengthsMatch(a: number, b: number, toleranceIn = 1.5): boolean {
   return Math.abs(a - b) <= toleranceIn
 }
 
+/** Casing section lengths are always less than baseframe total (107.9 + 44.9 ≠ mistaken 152.8 row). */
+export function isValidCasingSectionLength(lengthIn: number, baseframeLengthIn: number): boolean {
+  if (lengthIn < 30 || lengthIn > 130) return false
+  if (baseframeLengthIn > 0 && Math.abs(lengthIn - baseframeLengthIn) < 1.5) return false
+  return true
+}
+
+/**
+ * Extract "Casing Length X" values from weight table OCR text in section order.
+ * Ignores "Baseframe Length" rows (152.8 in) which must not become a casing section.
+ */
+export function extractCasingLengthsFromText(
+  text: string,
+  baseframeLengthIn: number
+): number[] {
+  const normalized = normalizeOcrText(text)
+  const bySection = new Map<number, number>()
+
+  const numberedRe = /(\d)\s+Casing\s+Length\s+(\d+(?:\.\d+)?)/gi
+  let m
+  while ((m = numberedRe.exec(normalized)) !== null) {
+    const sectionNo = parseInt(m[1], 10)
+    const lengthIn = parseFloat(m[2])
+    if (isValidCasingSectionLength(lengthIn, baseframeLengthIn)) {
+      bySection.set(sectionNo, lengthIn)
+    }
+  }
+
+  if (bySection.size >= 2) {
+    return [...bySection.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, len]) => len)
+  }
+
+  const simpleRe = /Casing\s+Length\s+(\d+(?:\.\d+)?)/gi
+  const ordered: number[] = []
+  while ((m = simpleRe.exec(normalized)) !== null) {
+    const lengthIn = parseFloat(m[1])
+    if (isValidCasingSectionLength(lengthIn, baseframeLengthIn)) {
+      ordered.push(lengthIn)
+    }
+  }
+
+  return ordered
+}
+
+/**
+ * Authoritative casing section lengths: weight table labels → layout → numeric pair.
+ */
+export function getCanonicalCasingLengthsIn(
+  table: ParsedWeightTable,
+  layoutLengthsIn: number[],
+  rawText: string
+): number[] {
+  const baseframeIn = table.baseframeLengthIn
+
+  const fromText = extractCasingLengthsFromText(rawText, baseframeIn)
+  if (fromText.length >= 2) {
+    return [...fromText].sort((a, b) => b - a)
+  }
+
+  const fromLayout = [...layoutLengthsIn]
+    .filter((l) => isValidCasingSectionLength(l, baseframeIn))
+    .sort((a, b) => b - a)
+  if (
+    fromLayout.length >= 2 &&
+    baseframeIn > 0 &&
+    Math.abs(fromLayout[0] + fromLayout[1] - baseframeIn) < 2
+  ) {
+    return fromLayout.slice(0, 2)
+  }
+
+  const fromTable = [...table.casingSections]
+    .sort((a, b) => a.sectionNo - b.sectionNo)
+    .map((s) => s.casingLengthIn)
+    .filter((l) => isValidCasingSectionLength(l, baseframeIn))
+  if (
+    fromTable.length >= 2 &&
+    baseframeIn > 0 &&
+    Math.abs(fromTable.reduce((a, b) => a + b, 0) - baseframeIn) < 2
+  ) {
+    return fromTable.sort((a, b) => b - a)
+  }
+
+  const inferred = inferCasingLengthsIn(baseframeIn, rawText, table.casingSections)
+  if (inferred.length >= 2) return inferred
+
+  return fromLayout.length > 0 ? fromLayout : fromTable
+}
+
+/** Apply canonical casing lengths (107.9 / 44.9 in) onto parsed weight table sections. */
+export function applyCanonicalCasingLengths(
+  table: ParsedWeightTable,
+  layoutLengthsIn: number[],
+  rawText: string
+): ParsedWeightTable {
+  const canonical = getCanonicalCasingLengthsIn(table, layoutLengthsIn, rawText)
+  if (canonical.length < 2) {
+    return normalizeSectionLengthOrder(table)
+  }
+
+  const sections = [...table.casingSections]
+    .sort((a, b) => a.sectionNo - b.sectionNo)
+    .map((s) => ({ ...s, components: [...s.components] }))
+
+  while (sections.length < 2) {
+    sections.push({
+      sectionNo: sections.length + 1,
+      casingLengthIn: 0,
+      sectionWeightLb: 0,
+      components: [],
+    })
+  }
+
+  canonical.forEach((lengthIn, idx) => {
+    if (sections[idx]) {
+      sections[idx].casingLengthIn = lengthIn
+      sections[idx].sectionNo = idx + 1
+    }
+  })
+
+  return normalizeSectionLengthOrder({ ...table, casingSections: sections })
+}
+
 /**
  * Reconcile OCR weight table with layout drawing dimensions.
  * Ensures both casing sections exist and components are assigned to the correct section.
@@ -576,13 +708,30 @@ export function inferCasingLengthsIn(
 ): number[] {
   const fromSections = existingSections
     .map((s) => s.casingLengthIn)
-    .filter((l) => l > 0)
+    .filter((l) => isValidCasingSectionLength(l, baseframeLengthIn))
     .sort((a, b) => b - a)
-  if (fromSections.length >= 2) return fromSections
+  if (
+    fromSections.length >= 2 &&
+    Math.abs(fromSections[0] + fromSections[1] - baseframeLengthIn) < 2
+  ) {
+    return fromSections
+  }
+
+  const fromLabels = extractCasingLengthsFromText(rawText, baseframeLengthIn)
+  if (fromLabels.length >= 2) {
+    return [...fromLabels].sort((a, b) => b - a)
+  }
 
   const nums = [...rawText.matchAll(/\d+(?:\.\d+)?/g)].map((m) => parseFloat(m[0]))
   const candidates = [
-    ...new Set(nums.filter((n) => n >= 20 && n <= 150 && Math.abs(n - Math.round(n)) > 0.01)),
+    ...new Set(
+      nums.filter(
+        (n) =>
+          n >= 30 &&
+          n <= 130 &&
+          isValidCasingSectionLength(n, baseframeLengthIn)
+      )
+    ),
   ]
 
   for (let i = 0; i < candidates.length; i++) {
