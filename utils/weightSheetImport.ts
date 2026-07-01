@@ -12,6 +12,8 @@ import {
   isEmptyWeightTable,
   mergeWeightTableWithLayout,
   type ParsedWeightTable,
+  inferCasingLengthsIn,
+  ensureComponentsFromRawText,
 } from "./weightTableParser"
 import { processWeightTableImage } from "./ocr"
 import { processLayoutImage } from "./layoutOcr"
@@ -176,7 +178,9 @@ function assignComponentLoads(
     const sectionLengthMm = inchesToMm(section.casingLengthIn)
     const sectionSegments = sectionSegmentGroups[sectionIdx] || []
 
-    const sectionComponents = section.components.filter((c) => c.weightLb > 0)
+    const sectionComponents = section.components.filter(
+      (c) => c.weightLb > 0 || c.name.toLowerCase().includes("inspection")
+    )
     const assignments = matchComponentsToSegments(
       sectionSegments,
       sectionComponents,
@@ -252,24 +256,31 @@ export function buildWeightImportFromSheets(
   const frameWidthMm = getGenioxFrameWidth(genioxType)
   const unit = weightTable.weightUnit
 
-  const totalCasingLengthIn = weightTable.casingSections.reduce(
-    (s, c) => s + c.casingLengthIn,
-    0
-  )
+  const totalCasingLengthIn = weightTable.casingSections.reduce((s, c, idx) => {
+    const len =
+      layout.casingSectionLengthsIn[idx] > 0
+        ? layout.casingSectionLengthsIn[idx]
+        : c.casingLengthIn
+    return s + len
+  }, 0)
 
   let currentPosition = 0
   const sections: WeightImportSection[] = weightTable.casingSections.map((cs, idx) => {
-    const lengthMm = inchesToMm(cs.casingLengthIn)
+    const lengthIn =
+      layout.casingSectionLengthsIn[idx] > 0
+        ? layout.casingSectionLengthsIn[idx]
+        : cs.casingLengthIn
+    const lengthMm = Math.round(inchesToMm(lengthIn) * 10) / 10
     const lengthRatio =
-      totalCasingLengthIn > 0 ? cs.casingLengthIn / totalCasingLengthIn : 1
+      totalCasingLengthIn > 0 ? lengthIn / totalCasingLengthIn : 1 / weightTable.casingSections.length
 
     // Casing weight lives in Loads as distributed load — keep section shell at 0 to avoid double-count
     const casingShellWeight = 0
 
     const section: WeightImportSection = {
       name: `Section ${cs.sectionNo || idx + 1}`,
-      startPosition: currentPosition,
-      endPosition: currentPosition + lengthMm,
+      startPosition: Math.round(currentPosition * 10) / 10,
+      endPosition: Math.round((currentPosition + lengthMm) * 10) / 10,
       length: lengthMm,
       casingWeight: casingShellWeight,
       casingWeightUnit: unit,
@@ -340,11 +351,22 @@ export async function processWeightSheets(
   }
 
   // Fill gaps from layout drawing dimensions
+  let casingLengthsForMerge = layout.casingSectionLengthsIn
+  if (casingLengthsForMerge.length < 2 && weightTable.baseframeLengthIn > 0) {
+    casingLengthsForMerge = inferCasingLengthsIn(
+      weightTable.baseframeLengthIn,
+      rawText,
+      weightTable.casingSections
+    )
+  }
+
   weightTable = mergeWeightTableWithLayout(
     weightTable,
-    layout.casingSectionLengthsIn,
+    casingLengthsForMerge,
     layout.baseframeLengthIn
   )
+
+  weightTable = ensureComponentsFromRawText(weightTable, rawText)
 
   if (isEmptyWeightTable(weightTable)) {
     throw new Error(

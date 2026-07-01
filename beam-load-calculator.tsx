@@ -852,7 +852,9 @@ export default function BeamLoadCalculator() {
                       </div>
                     </div>
                     <div>
-                      <Label htmlFor={`section-baseframe-${section.id}`}>Baseframe Weight (kg)</Label>
+                      <Label htmlFor={`section-baseframe-${section.id}`}>
+                        Baseframe Weight ({section.baseframeWeightUnit || "kg"})
+                      </Label>
                       <div className="flex gap-2">
                         <Input
                           type="number"

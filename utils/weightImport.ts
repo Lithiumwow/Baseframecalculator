@@ -211,10 +211,10 @@ function validateImportData(data: WeightImportData): WeightImportData {
     })
   }
 
-  // Validate components
+  // Validate components — keep inspection rows (e.g. 0.2 lb)
   if (data.components) {
     data.components = data.components.filter((component) => {
-      return component.weight > 0 && component.position >= 0
+      return component.weight >= 0 && component.position >= 0
     })
   }
 
@@ -228,11 +228,18 @@ export function convertImportedSections(
   importedSections: WeightImportSection[],
   frameLength: number
 ): Section[] {
+  const roundMm = (v: number) => Math.round(v * 10) / 10
+
   return importedSections.map((imported, index) => {
+    const startPosition = roundMm(imported.startPosition || 0)
+    let endPosition = roundMm(
+      imported.endPosition ?? startPosition + (imported.length || 1000)
+    )
+
     const section: Section = {
       id: `section-${Date.now()}-${index}`,
-      startPosition: imported.startPosition || 0,
-      endPosition: imported.endPosition || imported.startPosition + (imported.length || 1000),
+      startPosition,
+      endPosition,
       casingWeight: imported.casingWeight || 0,
       casingWeightUnit: imported.casingWeightUnit || "N",
       baseframeWeight: imported.baseframeWeight || 0,
@@ -242,9 +249,8 @@ export function convertImportedSections(
       name: imported.name || `Section ${index + 1}`,
     }
 
-    // Ensure endPosition doesn't exceed frame length
     if (section.endPosition > frameLength) {
-      section.endPosition = frameLength
+      section.endPosition = roundMm(frameLength)
     }
 
     return section
@@ -275,6 +281,7 @@ export function convertImportedComponents(
     if (targetSection) {
       absoluteStart = targetSection.startPosition + imported.position
     }
+    absoluteStart = Math.round(absoluteStart * 10) / 10
 
     const loadType = imported.loadType || "Distributed Load"
     const defaultUnit = imported.weightUnit || "lbs"
@@ -322,21 +329,19 @@ export function generateLoadsFromTotalWeights(
   const roofWeightPerMM = totalRoofWeight / totalLength
   const baseframeWeightPerMM = totalBaseframeWeight / totalLength
 
-  // Update each section with distributed weights
+  // Distribute roof weight across sections; baseframe only if not already set per section
   updatedSections.forEach((section) => {
     const sectionLength = section.endPosition - section.startPosition
     const sectionRoofWeight = roofWeightPerMM * sectionLength
     const sectionBaseframeWeight = baseframeWeightPerMM * sectionLength
 
-    // Update section weights (convert to N for internal calculations)
-    const roofWeightN = convertSectionWeightToN(sectionRoofWeight, weightUnit)
-    const baseframeWeightN = convertSectionWeightToN(sectionBaseframeWeight, weightUnit)
-
-    // Store in original units for display
     section.roofWeight = sectionRoofWeight
     section.roofWeightUnit = weightUnit
-    section.baseframeWeight = section.baseframeWeight + sectionBaseframeWeight
-    section.baseframeWeightUnit = weightUnit
+
+    if (!section.baseframeWeight || section.baseframeWeight <= 0) {
+      section.baseframeWeight = sectionBaseframeWeight
+      section.baseframeWeightUnit = weightUnit
+    }
   })
 
   return { sections: updatedSections, loads: newLoads }

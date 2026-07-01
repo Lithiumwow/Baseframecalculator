@@ -216,8 +216,9 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
     }
   }
 
-  // Assign components to sections by order if line tracking failed
-  if (result.casingSections.every((s) => s.components.length === 0)) {
+  // Assign components to sections by order if line tracking failed or incomplete
+  const totalComp = result.casingSections.reduce((n, s) => n + s.components.length, 0)
+  if (totalComp < 10) {
     assignComponentsByOrder(text, result)
   }
 
@@ -355,6 +356,25 @@ function assignComponentsByOrder(text: string, result: ParsedWeightTable) {
         weightLb: c.weight,
       }))
     }
+  } else if (found.length >= 10) {
+    while (result.casingSections.length < 2) {
+      result.casingSections.push({
+        sectionNo: result.casingSections.length + 1,
+        casingLengthIn: 0,
+        sectionWeightLb: 0,
+        components: [],
+      })
+    }
+    if (result.casingSections.length === 2) {
+      result.casingSections[0].components = found.slice(0, 9).map((c) => ({
+        name: c.name,
+        weightLb: c.weight,
+      }))
+      result.casingSections[1].components = found.slice(9).map((c) => ({
+        name: c.name,
+        weightLb: c.weight,
+      }))
+    }
   }
 }
 
@@ -366,34 +386,215 @@ export function isEmptyWeightTable(table: ParsedWeightTable): boolean {
   )
 }
 
+/** Split flat component list into per-section groups (2nd "Casing" row starts section 2). */
+export function splitComponentsIntoSections(
+  allComponents: Array<{ name: string; weightLb: number }>,
+  sectionCount: number
+): Array<Array<{ name: string; weightLb: number }>> {
+  if (sectionCount <= 1 || allComponents.length === 0) {
+    return [allComponents]
+  }
+
+  const secondCasingIdx = allComponents.findIndex(
+    (c, i) => i > 0 && c.name.toLowerCase().trim() === "casing"
+  )
+  if (secondCasingIdx > 0) {
+    const first = allComponents.slice(0, secondCasingIdx)
+    const rest = splitComponentsIntoSections(
+      allComponents.slice(secondCasingIdx),
+      sectionCount - 1
+    )
+    return [first, ...rest]
+  }
+
+  if (sectionCount === 2 && allComponents.length >= 10) {
+    return [allComponents.slice(0, 9), allComponents.slice(9)]
+  }
+
+  const perSection = Math.ceil(allComponents.length / sectionCount)
+  const groups: Array<Array<{ name: string; weightLb: number }>> = []
+  for (let i = 0; i < sectionCount; i++) {
+    groups.push(allComponents.slice(i * perSection, (i + 1) * perSection))
+  }
+  return groups
+}
+
+function lengthsMatch(a: number, b: number, toleranceIn = 1.5): boolean {
+  return Math.abs(a - b) <= toleranceIn
+}
+
+/**
+ * Reconcile OCR weight table with layout drawing dimensions.
+ * Ensures both casing sections exist and components are assigned to the correct section.
+ */
 export function mergeWeightTableWithLayout(
   table: ParsedWeightTable,
   layoutCasingLengths: number[],
   layoutBaseframeLength: number
 ): ParsedWeightTable {
-  const merged = { ...table, casingSections: table.casingSections.map((s) => ({ ...s, components: [...s.components] })) }
+  const merged: ParsedWeightTable = {
+    ...table,
+    casingSections: table.casingSections.map((s) => ({
+      ...s,
+      components: [...s.components],
+    })),
+  }
 
   if (merged.baseframeLengthIn === 0 && layoutBaseframeLength > 0) {
     merged.baseframeLengthIn = layoutBaseframeLength
   }
 
-  if (layoutCasingLengths.length > 0) {
-    if (merged.casingSections.length === 0) {
-      layoutCasingLengths.forEach((len, i) => {
-        merged.casingSections.push({
-          sectionNo: i + 1,
-          casingLengthIn: len,
-          sectionWeightLb: 0,
-          components: [],
-        })
-      })
-    } else {
-      merged.casingSections.forEach((section, i) => {
-        if (section.casingLengthIn === 0 && layoutCasingLengths[i]) {
-          section.casingLengthIn = layoutCasingLengths[i]
+  const layoutLengths = [...layoutCasingLengths].filter((l) => l > 0)
+  if (layoutLengths.length === 0) {
+    return merged
+  }
+
+  const baseframeIn =
+    merged.baseframeLengthIn || layoutBaseframeLength || layoutLengths.reduce((a, b) => a + b, 0)
+
+  const allComponents = merged.casingSections.flatMap((s) => s.components)
+  const weightByLength = new Map<number, number>()
+  for (const s of merged.casingSections) {
+    if (s.casingLengthIn > 0 && s.sectionWeightLb > 0) {
+      weightByLength.set(Math.round(s.casingLengthIn * 10), s.sectionWeightLb)
+    }
+  }
+
+  const needsRebuild =
+    merged.casingSections.length !== layoutLengths.length ||
+    merged.casingSections.some(
+      (s, i) => layoutLengths[i] && s.casingLengthIn > 0 && !lengthsMatch(s.casingLengthIn, layoutLengths[i])
+    )
+
+  if (needsRebuild || merged.casingSections.length < layoutLengths.length) {
+    merged.casingSections = layoutLengths.map((len, i) => {
+      const existing = table.casingSections.find((s) => lengthsMatch(s.casingLengthIn, len))
+      const byNo = table.casingSections.find((s) => s.sectionNo === i + 1)
+      const sectionWeightLb =
+        existing?.sectionWeightLb ||
+        byNo?.sectionWeightLb ||
+        weightByLength.get(Math.round(len * 10)) ||
+        0
+
+      return {
+        sectionNo: i + 1,
+        casingLengthIn: len,
+        sectionWeightLb,
+        components: existing?.components?.length ? [...existing.components] : byNo?.components?.length ? [...byNo.components] : [],
+      }
+    })
+
+    const anyComponents = merged.casingSections.some((s) => s.components.length > 0)
+    if (!anyComponents && allComponents.length > 0) {
+      const groups = splitComponentsIntoSections(allComponents, layoutLengths.length)
+      groups.forEach((group, i) => {
+        if (merged.casingSections[i]) {
+          merged.casingSections[i].components = group
         }
       })
+    } else if (allComponents.length > 0) {
+      const s0Empty = (merged.casingSections[0]?.components.length ?? 0) === 0
+      const assignedCount = merged.casingSections.reduce((n, s) => n + s.components.length, 0)
+      if (s0Empty || assignedCount < allComponents.length) {
+        const pool =
+          assignedCount >= allComponents.length
+            ? merged.casingSections.flatMap((s) => s.components)
+            : allComponents
+        const groups = splitComponentsIntoSections(pool, layoutLengths.length)
+        groups.forEach((group, i) => {
+          if (merged.casingSections[i]) {
+            merged.casingSections[i].components = group
+          }
+        })
+      }
     }
+  } else {
+    merged.casingSections.forEach((section, i) => {
+      if (layoutLengths[i]) {
+        section.casingLengthIn = layoutLengths[i]
+        section.sectionNo = i + 1
+      }
+    })
+  }
+
+  // Infer section totals from component sums when header weight missing
+  merged.casingSections.forEach((section) => {
+    if (section.sectionWeightLb === 0 && section.components.length > 0) {
+      const sum = section.components.reduce((s, c) => s + c.weightLb, 0)
+      if (sum > 10) section.sectionWeightLb = Math.round(sum * 10) / 10
+    }
+  })
+
+  merged.casingSections.sort((a, b) => a.sectionNo - b.sectionNo)
+  return merged
+}
+
+/** Infer casing section lengths (in) that sum to baseframe length. */
+export function inferCasingLengthsIn(
+  baseframeLengthIn: number,
+  rawText: string,
+  existingSections: ParsedWeightTable["casingSections"]
+): number[] {
+  const fromSections = existingSections
+    .map((s) => s.casingLengthIn)
+    .filter((l) => l > 0)
+    .sort((a, b) => b - a)
+  if (fromSections.length >= 2) return fromSections
+
+  const nums = [...rawText.matchAll(/\d+(?:\.\d+)?/g)].map((m) => parseFloat(m[0]))
+  const candidates = [
+    ...new Set(nums.filter((n) => n >= 20 && n <= 150 && Math.abs(n - Math.round(n)) > 0.01)),
+  ]
+
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = i + 1; j < candidates.length; j++) {
+      const sum = candidates[i] + candidates[j]
+      if (Math.abs(sum - baseframeLengthIn) < 2) {
+        return [Math.max(candidates[i], candidates[j]), Math.min(candidates[i], candidates[j])]
+      }
+    }
+  }
+
+  return fromSections
+}
+
+/**
+ * Re-parse component rows from raw OCR when section 1 components were missed.
+ */
+export function ensureComponentsFromRawText(
+  table: ParsedWeightTable,
+  rawText: string
+): ParsedWeightTable {
+  const merged: ParsedWeightTable = {
+    ...table,
+    casingSections: table.casingSections.map((s) => ({
+      ...s,
+      components: [...s.components],
+    })),
+  }
+
+  if (merged.casingSections.length < 2) return merged
+
+  const total = merged.casingSections.reduce((n, s) => n + s.components.length, 0)
+  const section1Empty = merged.casingSections[0]?.components.length === 0
+  if (total >= 10 && !section1Empty) return merged
+
+  const scratch: ParsedWeightTable = {
+    ...merged,
+    casingSections: merged.casingSections.map((s) => ({
+      ...s,
+      components: [] as ParsedWeightTable["casingSections"][0]["components"],
+    })),
+  }
+  assignComponentsByOrder(rawText, scratch)
+
+  const filled = scratch.casingSections.reduce((n, s) => n + s.components.length, 0)
+  if (filled > total) {
+    scratch.casingSections.forEach((s, i) => {
+      if (merged.casingSections[i] && s.components.length > 0) {
+        merged.casingSections[i].components = s.components
+      }
+    })
   }
 
   return merged
