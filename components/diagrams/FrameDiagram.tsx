@@ -1,6 +1,7 @@
 import type React from "react"
 import type { Load, Section } from "../../types"
 import { validateNumber, validatePositive } from "../../utils/validation"
+import { getDistributedLoadTotalWeightN } from "../../utils/conversions"
 
 interface FrameDiagramProps {
   frameLength: number
@@ -203,7 +204,10 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({ frameLength, frameWi
           const loadStartPos = validateNumber(load.startPosition, 0);
           const x = margin + loadStartPos * scaleX; // Start from left side (startPosition)
           const y = margin + 30 + (validFrameWidth * scaleY) / 2 - (loadWidthMM * scaleY) / 2;
-          const loadValue = load.magnitude * loadArea;
+          const loadValue =
+            load.unit === "lbs" || load.unit === "kg"
+              ? getDistributedLoadTotalWeightN(load)
+              : load.magnitude * loadArea;
           return (
             <g key={index}>
               <rect

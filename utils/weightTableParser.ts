@@ -529,6 +529,45 @@ export function mergeWeightTableWithLayout(
   return merged
 }
 
+/**
+ * Section 1 is always the longer casing; swap sections if OCR reversed them.
+ */
+export function normalizeSectionLengthOrder(
+  table: ParsedWeightTable
+): ParsedWeightTable {
+  const sections = table.casingSections.map((s) => ({
+    ...s,
+    components: [...s.components],
+  }))
+
+  if (sections.length >= 2) {
+    const len0 = sections[0].casingLengthIn
+    const len1 = sections[1].casingLengthIn
+    if (len0 > 0 && len1 > 0 && len0 < len1) {
+      const swapped = sections[1]
+      sections[1] = { ...sections[0], sectionNo: 2 }
+      sections[0] = { ...swapped, sectionNo: 1 }
+    }
+  }
+
+  // Single section must not use full baseframe length when table defines two casing rows
+  if (table.baseframeLengthIn > 0 && sections.length === 1) {
+    const only = sections[0]
+    if (Math.abs(only.casingLengthIn - table.baseframeLengthIn) < 1.5) {
+      only.casingLengthIn = 0
+    }
+  }
+
+  sections.forEach((s, i) => {
+    if (Math.abs(s.casingLengthIn - table.baseframeLengthIn) < 1.5 && sections.length > 1) {
+      s.casingLengthIn = 0
+    }
+    s.sectionNo = i + 1
+  })
+
+  return { ...table, casingSections: sections }
+}
+
 /** Infer casing section lengths (in) that sum to baseframe length. */
 export function inferCasingLengthsIn(
   baseframeLengthIn: number,
