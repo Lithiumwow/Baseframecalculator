@@ -45,8 +45,8 @@ function parseNum(s: string): number {
 
 function detectUnit(text: string): "lbs" | "kg" {
   const lower = text.toLowerCase()
-  if (lower.includes("lb")) return "lbs"
-  if (lower.includes("(kg)") || lower.includes("weight of function (kg)")) return "kg"
+  if (/\blbs?\b/.test(lower) || lower.includes("(lb)")) return "lbs"
+  if (/\bkg\b/.test(lower) || lower.includes("(kg)")) return "kg"
   return "lbs"
 }
 
@@ -199,12 +199,7 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
         !name.toLowerCase().includes("length") &&
         !name.toLowerCase().includes("weight of")
       ) {
-        const exists = currentSection.components.some(
-          (c) => c.name.toLowerCase() === name.toLowerCase()
-        )
-        if (!exists) {
-          currentSection.components.push({ name, weightLb: weight })
-        }
+        currentSection.components.push({ name, weightLb: weight })
       }
       continue
     }
@@ -431,11 +426,9 @@ function lengthsMatch(a: number, b: number, toleranceIn = 1.5): boolean {
   return Math.abs(a - b) <= toleranceIn
 }
 
-/** Casing section lengths are always less than baseframe total (107.9 + 44.9 ≠ mistaken 152.8 row). */
-export function isValidCasingSectionLength(lengthIn: number, baseframeLengthIn: number): boolean {
-  if (lengthIn < 30 || lengthIn > 130) return false
-  if (baseframeLengthIn > 0 && Math.abs(lengthIn - baseframeLengthIn) < 1.5) return false
-  return true
+/** Casing section lengths in inches (typical range ~15–130 in). */
+export function isValidCasingSectionLength(lengthIn: number, _baseframeLengthIn: number): boolean {
+  return lengthIn >= 15 && lengthIn <= 130
 }
 
 /**
@@ -449,11 +442,13 @@ export function extractCasingLengthsFromText(
   const normalized = normalizeOcrText(text)
   const bySection = new Map<number, number>()
 
-  const numberedRe = /(\d)\s+Casing\s+Length\s+(\d+(?:\.\d+)?)/gi
+  const numberedRe = /(\d)\s+Casing\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?/gi
   let m
   while ((m = numberedRe.exec(normalized)) !== null) {
     const sectionNo = parseInt(m[1], 10)
-    const lengthIn = parseFloat(m[2])
+    const lengthText = `Casing Length ${m[2]} ${m[3] || "in"}`
+    const parsed = parseLengthFromText(lengthText)
+    const lengthIn = parsed?.inches ?? parseFloat(m[2])
     if (isValidCasingSectionLength(lengthIn, baseframeLengthIn)) {
       bySection.set(sectionNo, lengthIn)
     }
@@ -465,10 +460,12 @@ export function extractCasingLengthsFromText(
       .map(([, len]) => len)
   }
 
-  const simpleRe = /Casing\s+Length\s+(\d+(?:\.\d+)?)/gi
+  const simpleRe = /Casing\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?/gi
   const ordered: number[] = []
   while ((m = simpleRe.exec(normalized)) !== null) {
-    const lengthIn = parseFloat(m[1])
+    const lengthText = `Casing Length ${m[1]} ${m[2] || "in"}`
+    const parsed = parseLengthFromText(lengthText)
+    const lengthIn = parsed?.inches ?? parseFloat(m[1])
     if (isValidCasingSectionLength(lengthIn, baseframeLengthIn)) {
       ordered.push(lengthIn)
     }
@@ -517,6 +514,11 @@ export function getCanonicalCasingLengthsIn(
 
   const inferred = inferCasingLengthsIn(baseframeIn, rawText, table.casingSections)
   if (inferred.length >= 2) return inferred
+
+  const singleSection = table.casingSections
+    .map((s) => s.casingLengthIn)
+    .filter((l) => l > 0 && isValidCasingSectionLength(l, baseframeIn))
+  if (singleSection.length === 1) return singleSection
 
   return fromLayout.length > 0 ? fromLayout : fromTable
 }
@@ -682,18 +684,16 @@ export function normalizeSectionLengthOrder(
     }
   }
 
-  // Single section must not use full baseframe length when table defines two casing rows
-  if (table.baseframeLengthIn > 0 && sections.length === 1) {
-    const only = sections[0]
-    if (Math.abs(only.casingLengthIn - table.baseframeLengthIn) < 1.5) {
-      only.casingLengthIn = 0
-    }
+  // Multi-section only: clear mistaken full-baseframe value on one of two sections
+  if (table.baseframeLengthIn > 0 && sections.length > 1) {
+    sections.forEach((s) => {
+      if (Math.abs(s.casingLengthIn - table.baseframeLengthIn) < 1.5) {
+        s.casingLengthIn = 0
+      }
+    })
   }
 
   sections.forEach((s, i) => {
-    if (Math.abs(s.casingLengthIn - table.baseframeLengthIn) < 1.5 && sections.length > 1) {
-      s.casingLengthIn = 0
-    }
     s.sectionNo = i + 1
   })
 

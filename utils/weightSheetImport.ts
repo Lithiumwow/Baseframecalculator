@@ -36,6 +36,11 @@ import {
   segmentInchesToMm,
   standardLayoutSegments,
 } from "./layoutSegmentDefaults"
+import {
+  assignDualDeckBayLoads,
+  looksLikeDualDeckWeightTable,
+} from "./dualDeckWeight"
+import { parseWeightTableFromRawText } from "./weightTableParser"
 
 export interface ParsedWeightRow {
   sectionNo: number
@@ -61,24 +66,43 @@ export interface SheetImportResult {
 
 const SKIP_COMPONENTS = new Set<string>() // all components become distributed loads
 
-/** Combine components in the same bay (stacked decks or shared inlet) into one distributed load. */
-function mergeBayLoads(components: WeightImportComponent[]): WeightImportComponent[] {
-  const merged = new Map<string, WeightImportComponent>()
+/** Merge damper + filter when they share the same inlet bay (single-deck only). */
+function mergeInletBayLoads(components: WeightImportComponent[]): WeightImportComponent[] {
+  const result: WeightImportComponent[] = []
+  const used = new Set<number>()
 
-  for (const comp of components) {
-    const key = `${comp.sectionIndex}|${Math.round(comp.position)}|${Math.round(comp.loadLength ?? 0)}`
-    const existing = merged.get(key)
-    if (existing) {
-      existing.weight = Math.round((existing.weight + comp.weight) * 100) / 100
-      if (!existing.name.includes(comp.name)) {
-        existing.name = `${existing.name} + ${comp.name}`
+  for (let i = 0; i < components.length; i++) {
+    if (used.has(i)) continue
+    let merged = { ...components[i] }
+
+    for (let j = i + 1; j < components.length; j++) {
+      if (used.has(j)) continue
+      const other = components[j]
+      const sameBay =
+        merged.sectionIndex === other.sectionIndex &&
+        Math.round(merged.position) === Math.round(other.position) &&
+        Math.round(merged.loadLength ?? 0) === Math.round(other.loadLength ?? 0)
+      const inletPair =
+        sameBay &&
+        [merged.name, other.name].every((n) => {
+          const lower = n.toLowerCase()
+          return lower.includes("damper") || lower.includes("filter")
+        })
+
+      if (inletPair) {
+        merged.weight = Math.round((merged.weight + other.weight) * 100) / 100
+        if (!merged.name.includes(other.name)) {
+          merged.name = `${merged.name} + ${other.name}`
+        }
+        used.add(j)
       }
-    } else {
-      merged.set(key, { ...comp })
     }
+
+    result.push(merged)
+    used.add(i)
   }
 
-  return Array.from(merged.values())
+  return result
 }
 
 /** Sort by section number and resolve casing length (longer section = Section 1). */
@@ -109,12 +133,14 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
   let currentSectionNo = 0
   let weightUnit: "lbs" | "kg" = "lbs"
 
+  for (let i = 0; i < Math.min(lines.length, 4); i++) {
+    const line = lines[i].toLowerCase()
+    if (line.includes("lb")) weightUnit = "lbs"
+    if (/\bkg\b/.test(line) && !line.includes("lb")) weightUnit = "kg"
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
-    if (i === 0 && line.toLowerCase().includes("lb")) weightUnit = "lbs"
-    if (i === 0 && line.toLowerCase().includes("kg") && !line.toLowerCase().includes("lb")) {
-      weightUnit = "kg"
-    }
     if (line.toLowerCase().includes("section no")) continue
 
     const parts = line.split(",").map((p) => p.trim())
@@ -195,7 +221,13 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
       otherComponentsLb = row.sectionWeight
     } else if (func.includes("weight of unit")) {
       unitTotalLb = row.sectionWeight
-    } else if (row.functionCode && row.functionWeight > 0 && currentCasing) {
+    } else if (
+      row.functionCode &&
+      (row.functionWeight > 0 ||
+        row.functionCode.toLowerCase().includes("inspection") ||
+        row.functionCode.toLowerCase().includes("empty")) &&
+      currentCasing
+    ) {
       currentCasing.components.push({
         name: row.functionCode,
         weightLb: row.functionWeight,
@@ -259,9 +291,29 @@ function assignComponentLoads(
 
     const sectionComponents = section.components.filter(
       (c) =>
-        (c.weightLb > 0 || c.name.toLowerCase().includes("inspection")) &&
+        (c.weightLb > 0 ||
+          c.name.toLowerCase().includes("inspection") ||
+          c.name.toLowerCase().includes("empty")) &&
         c.name.toLowerCase().trim() !== "casing"
     )
+
+    const useDualDeck =
+      layout.layoutOrientation === "horizontal" ||
+      (sectionSegments.length > 0 && looksLikeDualDeckWeightTable(sectionComponents))
+
+    if (useDualDeck && sectionSegments.length > 0) {
+      components.push(
+        ...assignDualDeckBayLoads(
+          sectionComponents,
+          sectionSegments,
+          sectionIdx,
+          weightUnit,
+          frameWidthMm
+        )
+      )
+      continue
+    }
+
     const assignments = matchComponentsToSegments(
       sectionSegments,
       sectionComponents,
@@ -321,7 +373,7 @@ function assignComponentLoads(
     })
   }
 
-  return mergeBayLoads(components)
+  return mergeInletBayLoads(components)
 }
 
 /**
@@ -414,6 +466,36 @@ export function buildWeightImportFromSheets(
 }
 
 /**
+ * Parse weight table from pasted text (more reliable than OCR for kg tables).
+ */
+export function parseWeightTableFromText(text: string): ParsedWeightTable {
+  return parseWeightTableFromRawText(text)
+}
+
+/**
+ * Build import from layout image + pasted/OCR weight text.
+ */
+export async function processWeightSheetsWithText(
+  layoutImage: File,
+  weightText: string,
+  genioxType: number,
+  onProgress?: (stage: string, progress: number) => void
+): Promise<SheetImportResult> {
+  onProgress?.("Reading layout drawing...", 10)
+  const layout = await processLayoutImage(layoutImage, (p) =>
+    onProgress?.("Reading layout drawing...", 10 + p * 0.5)
+  )
+
+  onProgress?.("Parsing weights table...", 65)
+  let weightTable = parseWeightTableStructured(weightText)
+  if (isEmptyWeightTable(weightTable)) {
+    weightTable = parseWeightTableFromRawText(weightText)
+  }
+
+  return finalizeWeightSheetImport(weightTable, layout, genioxType, weightText, onProgress)
+}
+
+/**
  * Full pipeline: OCR both sheets → build JSON → convert to app types → COG.
  */
 export async function processWeightSheets(
@@ -434,7 +516,6 @@ export async function processWeightSheets(
 
   onProgress?.("Building import data...", 92)
 
-  // Try structured CSV first, then raw OCR text (more reliable for screenshots)
   let weightTable = parseWeightTableStructured(formattedTable)
   if (isEmptyWeightTable(weightTable)) {
     weightTable = parseWeightTableFromRawText(rawText)
@@ -443,7 +524,16 @@ export async function processWeightSheets(
     weightTable = parseWeightTableFromRawText(formattedTable)
   }
 
-  // Fill gaps from layout drawing dimensions
+  return finalizeWeightSheetImport(weightTable, layout, genioxType, rawText, onProgress)
+}
+
+async function finalizeWeightSheetImport(
+  weightTable: ParsedWeightTable,
+  layout: ParsedLayout,
+  genioxType: number,
+  rawText: string,
+  onProgress?: (stage: string, progress: number) => void
+): Promise<SheetImportResult> {
   let casingLengthsForMerge = layout.casingSectionLengthsIn
   if (casingLengthsForMerge.length < 2 && weightTable.baseframeLengthIn > 0) {
     casingLengthsForMerge = inferCasingLengthsIn(

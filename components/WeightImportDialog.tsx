@@ -33,7 +33,7 @@ import {
   createWeightImportTemplate,
   type WeightImportData,
 } from "../utils/weightImport"
-import { processWeightSheets, type COGResult } from "../utils/weightSheetImport"
+import { processWeightSheets, processWeightSheetsWithText, type COGResult } from "../utils/weightSheetImport"
 import { GENIOX_TYPES, getGenioxFrameWidth } from "../utils/genioxDimensions"
 import { calculateCOG, buildCOGItemsFromImport } from "../utils/cogCalculation"
 
@@ -74,6 +74,7 @@ export function WeightImportDialog({
   const [genioxType, setGenioxType] = useState<string>("10")
   const [layoutImage, setLayoutImage] = useState<File | null>(null)
   const [weightsImage, setWeightsImage] = useState<File | null>(null)
+  const [pastedWeightText, setPastedWeightText] = useState("")
 
   const buildPreviewFromImportData = (
     importData: WeightImportData,
@@ -134,8 +135,12 @@ export function WeightImportDialog({
   }
 
   const handleSheetImport = async () => {
-    if (!layoutImage || !weightsImage) {
-      setError("Please upload both the layout drawing and the weights table.")
+    if (!layoutImage) {
+      setError("Please upload the layout drawing.")
+      return
+    }
+    if (!pastedWeightText.trim() && !weightsImage) {
+      setError("Upload a weights table screenshot or paste the weight table text below.")
       return
     }
 
@@ -145,15 +150,25 @@ export function WeightImportDialog({
     setPreview(null)
 
     try {
-      const result = await processWeightSheets(
-        layoutImage,
-        weightsImage,
-        parseInt(genioxType, 10),
-        (stage, progress) => {
-          setOcrStage(stage)
-          setOcrProgress(progress)
-        }
-      )
+      const result = pastedWeightText.trim()
+        ? await processWeightSheetsWithText(
+            layoutImage,
+            pastedWeightText.trim(),
+            parseInt(genioxType, 10),
+            (stage, progress) => {
+              setOcrStage(stage)
+              setOcrProgress(progress)
+            }
+          )
+        : await processWeightSheets(
+            layoutImage,
+            weightsImage!,
+            parseInt(genioxType, 10),
+            (stage, progress) => {
+              setOcrStage(stage)
+              setOcrProgress(progress)
+            }
+          )
 
       setImportText(result.json)
       setPreview({
@@ -226,6 +241,7 @@ export function WeightImportDialog({
       setError(null)
       setLayoutImage(null)
       setWeightsImage(null)
+      setPastedWeightText("")
     }
   }
 
@@ -317,7 +333,7 @@ export function WeightImportDialog({
               </div>
 
               <div>
-                <Label htmlFor="weights-upload">2. Weights Table</Label>
+                <Label htmlFor="weights-upload">2. Weights Table (screenshot or paste below)</Label>
                 <input
                   id="weights-upload"
                   type="file"
@@ -330,9 +346,20 @@ export function WeightImportDialog({
                 )}
               </div>
 
+              <div>
+                <Label htmlFor="pasted-weights">Or paste weight table text (recommended for kg tables)</Label>
+                <Textarea
+                  id="pasted-weights"
+                  placeholder={`Section No\tSection Code\tWeight of function\tWeight of section\nFunction Code\tkg\tkg\n1\tCasing Length 2282 mm\t\t468\n\tCasing\t257\n\tDamper\t10\n...`}
+                  value={pastedWeightText}
+                  onChange={(e) => setPastedWeightText(e.target.value)}
+                  className="mt-1 font-mono text-xs min-h-[120px]"
+                />
+              </div>
+
               <Button
                 onClick={handleSheetImport}
-                disabled={isProcessingOCR || !layoutImage || !weightsImage}
+                disabled={isProcessingOCR || !layoutImage || (!weightsImage && !pastedWeightText.trim())}
                 className="w-full"
               >
                 {isProcessingOCR ? (
