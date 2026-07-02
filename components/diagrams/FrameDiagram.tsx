@@ -182,6 +182,7 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({ frameLength, frameWi
 
       {/* Load indicators */}
       {loads.map((load, index) => {
+        const labelLift = 22 + (index % 3) * 14
         if (load.type === "Distributed Load") {
           let loadLengthMM = 0;
           let loadWidthMM = 0;
@@ -238,7 +239,7 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({ frameLength, frameWi
                     Math.max(margin, validateNumber(x, margin)) +
                     validatePositive(Math.min(loadLengthMM * scaleX, validFrameLength * scaleX), 10) / 2
                   }
-                  y={Math.max(margin + 30, validateNumber(y, margin + 30)) - 22}
+                  y={Math.max(margin + 30, validateNumber(y, margin + 30)) - labelLift}
                   textAnchor="middle"
                   fontSize="9"
                   fill="red"

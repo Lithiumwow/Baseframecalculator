@@ -32,12 +32,13 @@ import {
   matchComponentsToSegments,
   inferKindFromWeightName,
   layoutTypeLabel,
+  syntheticSegmentsFromComponents,
+  weightTableComponentsForLoads,
   type WeightComponentKind,
 } from "./layoutSymbols"
 import {
   defaultLengthInForKind,
   segmentInchesToMm,
-  standardLayoutSegments,
 } from "./layoutSegmentDefaults"
 import {
   assignDualDeckBayLoads,
@@ -254,30 +255,37 @@ function assignComponentLoads(
 ): WeightImportComponent[] {
   const components: WeightImportComponent[] = []
 
-  const allSegments =
-    layout.layoutOrientation === "horizontal" && layout.componentSegments?.length > 0
-      ? layout.componentSegments
-      : layout.componentSegments?.length > 0
-        ? layout.componentSegments
-        : layout.componentSegmentLengthsIn.length > 0
-          ? layout.componentSegmentLengthsIn.map((lengthIn) => ({
-              lengthIn,
-              type: "unknown" as const,
-            }))
-          : layout.layoutOrientation === "horizontal"
-            ? []
-            : standardLayoutSegments()
-
   const orderedSections = getOrderedCasingSections(casingSections)
 
-  const sectionSegmentGroups = splitSegmentsByCasingSections(
-    allSegments,
+  const casingLengthsIn =
     resolvedLengthsIn.length > 0 && resolvedLengthsIn.every((l) => l > 0)
       ? resolvedLengthsIn
       : layout.casingSectionLengthsIn.length > 0
         ? [...layout.casingSectionLengthsIn]
         : orderedSections.map((s) => s.casingLengthIn)
-  )
+
+  const hasRealLayout =
+    (layout.componentSegments?.length ?? 0) > 0 ||
+    (layout.componentSegmentLengthsIn?.length ?? 0) > 0
+
+  const sectionSegmentGroups = hasRealLayout
+    ? splitSegmentsByCasingSections(
+        layout.layoutOrientation === "horizontal" && layout.componentSegments?.length > 0
+          ? layout.componentSegments
+          : layout.componentSegments?.length > 0
+            ? layout.componentSegments
+            : layout.componentSegmentLengthsIn.map((lengthIn) => ({
+                lengthIn,
+                type: "unknown" as const,
+              })),
+        casingLengthsIn
+      )
+    : orderedSections.map((section, idx) =>
+        syntheticSegmentsFromComponents(
+          weightTableComponentsForLoads(section.components),
+          casingLengthsIn[idx] || section.casingLengthIn
+        )
+      )
 
   for (let sectionIdx = 0; sectionIdx < orderedSections.length; sectionIdx++) {
     const section = orderedSections[sectionIdx]
@@ -285,13 +293,7 @@ function assignComponentLoads(
     const sectionLengthMm = inchesToMm(sectionLengthIn)
     const sectionSegments = sectionSegmentGroups[sectionIdx] || []
 
-    const sectionComponents = section.components.filter(
-      (c) =>
-        (c.weightLb > 0 ||
-          c.name.toLowerCase().includes("inspection") ||
-          c.name.toLowerCase().includes("empty")) &&
-        c.name.toLowerCase().trim() !== "casing"
-    )
+    const sectionComponents = weightTableComponentsForLoads(section.components)
 
     const useDualDeck =
       layout.layoutOrientation === "horizontal" &&

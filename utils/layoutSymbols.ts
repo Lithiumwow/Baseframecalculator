@@ -271,3 +271,47 @@ export function matchComponentsToSegments(
 
   return assignments
 }
+
+/** Components to place as distributed loads (exclude casing shell row). */
+export function weightTableComponentsForLoads(
+  components: Array<{ name: string; weightLb: number }>
+): Array<{ name: string; weightLb: number }> {
+  return components.filter(
+    (c) =>
+      (c.weightLb > 0 ||
+        c.name.toLowerCase().includes("inspection") ||
+        c.name.toLowerCase().includes("empty")) &&
+      c.name.toLowerCase().trim() !== "casing"
+  )
+}
+
+/**
+ * When no layout drawing is available, build one bay per weight-table component
+ * scaled to fill the casing section length (avoids Geniox default 152 in template).
+ */
+export function syntheticSegmentsFromComponents(
+  components: Array<{ name: string; weightLb: number }>,
+  sectionLengthIn: number
+): LayoutSegment[] {
+  const filtered = weightTableComponentsForLoads(components)
+  if (filtered.length === 0 || sectionLengthIn <= 0) {
+    return sectionLengthIn > 0
+      ? [{ lengthIn: sectionLengthIn, type: "unknown" }]
+      : []
+  }
+
+  const rawLengths = filtered.map((c) => {
+    const kind = inferKindFromWeightName(c.name)
+    return defaultLengthInForKind(kind)
+  })
+  const rawSum = rawLengths.reduce((a, b) => a + b, 0) || filtered.length
+  const scale = sectionLengthIn / rawSum
+
+  return filtered.map((c, i) => {
+    const kind = inferKindFromWeightName(c.name)
+    return {
+      lengthIn: Math.max(0.5, rawLengths[i] * scale),
+      type: (kind && kind !== "casing" ? kind : "unknown") as LayoutComponentType,
+    }
+  })
+}
