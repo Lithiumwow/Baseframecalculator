@@ -32,6 +32,7 @@ import {
   getDefaultBaseFrameLoads,
   clearCalculatorStorage,
 } from "./utils/calculatorDefaults"
+import { GENIOX_TYPES, getGenioxFrameWidth } from "./utils/genioxDimensions"
 
 // All components are now imported from modules - no local definitions needed
 
@@ -41,7 +42,7 @@ export default function BeamLoadCalculator() {
   const [beamCrossSection, setBeamCrossSection] = useState("C Channel")
   const [beamLength, setBeamLength] = useState(1000)
   const [frameLength, setFrameLength] = useState(2000)
-  const [frameWidth, setFrameWidth] = useState(1000)
+  const [frameWidth, setFrameWidth] = useState(DEFAULT_CALCULATOR_VALUES.frameWidth)
   const [leftSupport, setLeftSupport] = useState(0)
   const [rightSupport, setRightSupport] = useState(1000)
   const [loads, setLoads] = useState<Load[]>([{ type: "Point Load", magnitude: 1000, startPosition: 500, unit: "N" }])
@@ -61,6 +62,7 @@ export default function BeamLoadCalculator() {
   const [frameWeight, setFrameWeight] = useState(0) // Calculated total frame weight in N (sum of all section baseframe weights)
   const [totalRoofWeight, setTotalRoofWeight] = useState(0) // Total roof weight for entire frame (kg)
   const [totalRoofWeightUnit, setTotalRoofWeightUnit] = useState<"N" | "kg" | "lbs">("kg")
+  const [genioxType, setGenioxType] = useState<string>(DEFAULT_CALCULATOR_VALUES.genioxType)
   const [results, setResults] = useState({
     maxShearForce: 0,
     maxBendingMoment: 0,
@@ -79,6 +81,23 @@ export default function BeamLoadCalculator() {
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
   const [cogResult, setCogResult] = useState<COGResult | null>(null)
 
+  const syncFrameLengthFromSections = (sectionList: Section[]) => {
+    if (sectionList.length === 0) return
+    const totalLength = Math.max(...sectionList.map((s) => s.endPosition))
+    if (totalLength > 0) {
+      setFrameLength(totalLength)
+    }
+  }
+
+  const handleGenioxTypeChange = (value: string) => {
+    setGenioxType(value)
+    const typeNum = parseInt(value, 10)
+    if (!Number.isNaN(typeNum)) {
+      setFrameWidth(getGenioxFrameWidth(typeNum))
+    }
+    syncFrameLengthFromSections(sections)
+  }
+
   const resetCalculator = (keepAnalysisType = true) => {
     const defaults = DEFAULT_CALCULATOR_VALUES
     const nextAnalysisType = keepAnalysisType ? analysisType : defaults.analysisType
@@ -88,7 +107,7 @@ export default function BeamLoadCalculator() {
     setBeamCrossSection(defaults.beamCrossSection)
     setBeamLength(defaults.beamLength)
     setFrameLength(defaults.frameLength)
-    setFrameWidth(defaults.frameWidth)
+    setFrameWidth(getGenioxFrameWidth(parseInt(defaults.genioxType, 10)))
     setLeftSupport(defaults.leftSupport)
     setRightSupport(defaults.rightSupport)
     setMaterial(defaults.material)
@@ -103,11 +122,12 @@ export default function BeamLoadCalculator() {
     setFrameWeight(0)
     setTotalRoofWeight(defaults.totalRoofWeight)
     setTotalRoofWeightUnit(defaults.totalRoofWeightUnit)
+    setGenioxType(defaults.genioxType)
     setSections([])
     setCogResult(null)
     setLoads(
       nextAnalysisType === "Base Frame"
-        ? getDefaultBaseFrameLoads(defaults.frameWidth)
+        ? getDefaultBaseFrameLoads(getGenioxFrameWidth(parseInt(defaults.genioxType, 10)))
         : DEFAULT_SIMPLE_BEAM_LOADS,
     )
     clearCalculatorStorage()
@@ -123,7 +143,12 @@ export default function BeamLoadCalculator() {
   const applyWeightImport = (result: WeightImportResult) => {
     resetCalculator(true)
     if (result.frameLength) setFrameLength(result.frameLength)
-    if (result.frameWidth) setFrameWidth(result.frameWidth)
+    const typeNum = parseInt(genioxType, 10)
+    if (!Number.isNaN(typeNum)) {
+      setFrameWidth(getGenioxFrameWidth(typeNum))
+    } else if (result.frameWidth) {
+      setFrameWidth(result.frameWidth)
+    }
     if (result.totalRoofWeight !== undefined && result.totalRoofWeight > 0) {
       setTotalRoofWeight(result.totalRoofWeight)
       if (result.totalRoofWeightUnit) {
@@ -207,6 +232,10 @@ export default function BeamLoadCalculator() {
     } else {
       // For base frame, start first load at position 0
       setLoads([{ type: "Distributed Load", magnitude: 1000, startPosition: 0, loadLength: 500, loadWidth: frameWidth, unit: "N", name: "Load 1" }])
+      const typeNum = parseInt(genioxType, 10)
+      if (!Number.isNaN(typeNum)) {
+        setFrameWidth(getGenioxFrameWidth(typeNum))
+      }
     }
   }, [analysisType])
 
@@ -382,6 +411,13 @@ export default function BeamLoadCalculator() {
         if (state.beamCrossSection) setBeamCrossSection(state.beamCrossSection)
         if (state.totalRoofWeight !== undefined) setTotalRoofWeight(state.totalRoofWeight)
         if (state.totalRoofWeightUnit) setTotalRoofWeightUnit(state.totalRoofWeightUnit)
+        if (state.genioxType) {
+          setGenioxType(state.genioxType)
+          const typeNum = parseInt(state.genioxType, 10)
+          if (!Number.isNaN(typeNum)) {
+            setFrameWidth(getGenioxFrameWidth(typeNum))
+          }
+        }
       }
     } catch (error) {
       console.error("Failed to load state from localStorage:", error)
@@ -412,6 +448,7 @@ export default function BeamLoadCalculator() {
         beamCrossSection,
         totalRoofWeight,
         totalRoofWeightUnit,
+        genioxType,
       }
       localStorage.setItem(CALCULATOR_STORAGE_KEY, JSON.stringify(stateToSave))
     } catch (error) {
@@ -438,6 +475,7 @@ export default function BeamLoadCalculator() {
     beamCrossSection,
     totalRoofWeight,
     totalRoofWeightUnit,
+    genioxType,
   ])
 
   // Update section roof weights when total roof weight or frame length changes
@@ -679,6 +717,27 @@ export default function BeamLoadCalculator() {
             ) : (
               <>
                 <div className="grid grid-cols-2 gap-4">
+                  <Label htmlFor="geniox-type" className="flex items-center gap-2">
+                    <Package className="w-4 h-4 text-gray-500" />
+                    Geniox Unit Type
+                  </Label>
+                  <Select value={genioxType} onValueChange={handleGenioxTypeChange}>
+                    <SelectTrigger id="geniox-type">
+                      <SelectValue placeholder="Select Geniox type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {GENIOX_TYPES.map((type) => (
+                        <SelectItem key={type} value={String(type)}>
+                          Geniox {type} — {getGenioxFrameWidth(type)} mm width
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="text-xs text-gray-500 -mt-2">
+                  Width is set from the Geniox type. Length updates when you import weights or define sections.
+                </p>
+                <div className="grid grid-cols-2 gap-4">
                   <Label htmlFor="frame-length" className="flex items-center gap-2">
                     <Ruler className="w-4 h-4 text-gray-500" />
                     Frame Length (mm)
@@ -809,6 +868,7 @@ export default function BeamLoadCalculator() {
                     onImport={applyWeightImport}
                     frameLength={frameLength}
                     frameWidth={frameWidth}
+                    genioxType={genioxType}
                   />
                   <Button onClick={addSection} variant="outline" size="sm" disabled={sections.length >= 10}>
                     <Package className="w-4 h-4 mr-2" />

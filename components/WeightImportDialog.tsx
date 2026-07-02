@@ -35,7 +35,6 @@ import {
 } from "../utils/weightImport"
 import { processWeightSheets, processWeightTablePaste, type COGResult } from "../utils/weightSheetImport"
 import { isSystemairWeightTableText } from "../utils/weightTableParser"
-import { GENIOX_TYPES, getGenioxFrameWidth } from "../utils/genioxDimensions"
 import { calculateCOG, buildCOGItemsFromImport } from "../utils/cogCalculation"
 
 export interface WeightImportResult {
@@ -53,12 +52,14 @@ interface WeightImportDialogProps {
   onImport: (result: WeightImportResult) => void
   frameLength: number
   frameWidth: number
+  genioxType: string
 }
 
 export function WeightImportDialog({
   onImport,
   frameLength,
   frameWidth,
+  genioxType,
 }: WeightImportDialogProps) {
   const [open, setOpen] = useState(false)
   const [importText, setImportText] = useState("")
@@ -68,7 +69,6 @@ export function WeightImportDialog({
   const [isProcessingOCR, setIsProcessingOCR] = useState(false)
   const [ocrProgress, setOcrProgress] = useState(0)
   const [ocrStage, setOcrStage] = useState("")
-  const [genioxType, setGenioxType] = useState<string>("10")
   const [layoutImage, setLayoutImage] = useState<File | null>(null)
   const [weightsImage, setWeightsImage] = useState<File | null>(null)
   const [pastedWeightText, setPastedWeightText] = useState("")
@@ -81,7 +81,6 @@ export function WeightImportDialog({
     setIsProcessingOCR(false)
     setOcrProgress(0)
     setOcrStage("")
-    setGenioxType("10")
     setLayoutImage(null)
     setWeightsImage(null)
     setPastedWeightText("")
@@ -361,22 +360,9 @@ export function WeightImportDialog({
 
           {importType === "ocr" && (
             <div className="space-y-4 border rounded-lg p-4 bg-gray-50">
-              <div>
-                <Label>Geniox Unit Type</Label>
-                <Select value={genioxType} onValueChange={setGenioxType}>
-                  <SelectTrigger className="mt-1 w-48">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {GENIOX_TYPES.map((type) => (
-                      <SelectItem key={type} value={String(type)}>
-                        Geniox {type} — {getGenioxFrameWidth(type)} mm width
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
+              <p className="text-xs text-muted-foreground">
+                Geniox unit type is set in Configuration (frame width updates automatically).
+              </p>
               <div>
                 <Label htmlFor="layout-upload">1. Layout Drawing (dimensions &amp; sections)</Label>
                 <input
@@ -454,21 +440,10 @@ Weight of unit 1134`}
 
           {importType === "table" && (
             <div className="space-y-4 border rounded-lg p-4 bg-gray-50">
-              <div>
-                <Label>Geniox Unit Type</Label>
-                <Select value={genioxType} onValueChange={setGenioxType}>
-                  <SelectTrigger className="mt-1 w-48">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {GENIOX_TYPES.map((type) => (
-                      <SelectItem key={type} value={String(type)}>
-                        Geniox {type} — {getGenioxFrameWidth(type)} mm width
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <p className="text-xs text-muted-foreground">
+                Geniox unit type is set in Configuration. Paste the Systemair weight table below and
+                optionally add a layout image for accurate component bay lengths.
+              </p>
               <div>
                 <Label htmlFor="table-layout-upload">
                   Layout drawing (optional — for component bay lengths)
@@ -484,10 +459,6 @@ Weight of unit 1134`}
                   <p className="text-xs text-green-600 mt-1">✓ {layoutImage.name}</p>
                 )}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Paste the Systemair weight table in the box below (space-separated lines work). Click
-                Parse Data. Add a layout image for accurate component bay lengths.
-              </p>
             </div>
           )}
 

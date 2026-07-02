@@ -1,5 +1,6 @@
 import type { Load } from "../types"
 import { standardMaterials } from "../constants"
+import { getGenioxFrameWidth } from "./genioxDimensions"
 
 export const CALCULATOR_STORAGE_KEY = "beamLoadCalculatorState"
 
@@ -27,7 +28,7 @@ export const DEFAULT_CALCULATOR_VALUES = {
   beamCrossSection: "C Channel",
   beamLength: 1000,
   frameLength: 2000,
-  frameWidth: 1000,
+  frameWidth: getGenioxFrameWidth(10),
   leftSupport: 0,
   rightSupport: 1000,
   material: "ASTM A36 Structural Steel" as keyof typeof standardMaterials,
@@ -41,6 +42,7 @@ export const DEFAULT_CALCULATOR_VALUES = {
   beamDensity: 7850,
   totalRoofWeight: 0,
   totalRoofWeightUnit: "kg" as const,
+  genioxType: "10",
 }
 
 export function clearCalculatorStorage(): void {

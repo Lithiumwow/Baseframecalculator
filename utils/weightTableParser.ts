@@ -230,9 +230,14 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
     }
   }
 
-  // Assign components to sections by order if line tracking failed or incomplete
+  // Assign components to sections by order only when line tracking failed or incomplete
   const totalComp = result.casingSections.reduce((n, s) => n + s.components.length, 0)
-  if (totalComp < 10) {
+  const sectionsMissingCasingShell =
+    result.casingSections.length >= 2 &&
+    result.casingSections.some(
+      (s) => !s.components.some((c) => c.name.toLowerCase().trim() === "casing" && c.weightLb > 0)
+    )
+  if (totalComp < 10 && sectionsMissingCasingShell) {
     assignComponentsByOrder(text, result)
   }
 
@@ -402,8 +407,8 @@ function assignComponentsByOrder(text: string, result: ParsedWeightTable) {
   }
 
   if (result.casingSections.length === 2 && found.length > 0) {
-    // Section 1 typically has 9 components, section 2 has 3
-    const splitAt = found.findIndex((f, i) => i > 0 && f.name === "Casing" && found[i - 1].name !== "Casing")
+    // Second "Casing" row starts section 2 (consecutive Casing entries are expected)
+    const splitAt = found.findIndex((f, i) => i > 0 && f.name === "Casing")
     const s1Components = splitAt > 0 ? found.slice(0, splitAt) : found.slice(0, 9)
     const s2Components = splitAt > 0 ? found.slice(splitAt) : found.slice(9)
 
@@ -896,7 +901,10 @@ export function ensureComponentsFromRawText(
 
   const total = merged.casingSections.reduce((n, s) => n + s.components.length, 0)
   const section1Empty = merged.casingSections[0]?.components.length === 0
-  if (total >= 10 && !section1Empty) return merged
+  const sectionsMissingCasingShell = merged.casingSections.some(
+    (s) => !s.components.some((c) => c.name.toLowerCase().trim() === "casing" && c.weightLb > 0)
+  )
+  if (total >= 10 && !section1Empty && !sectionsMissingCasingShell) return merged
 
   const scratch: ParsedWeightTable = {
     ...merged,
