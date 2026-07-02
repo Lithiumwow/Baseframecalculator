@@ -8,7 +8,7 @@ import type { ParsedLayout } from "./layoutOcr"
 import { INCH_TO_MM, inchesToMm } from "./layoutOcr"
 import { parseLengthFromText } from "./lengthUnits"
 import {
-  parseWeightTableFromRawText,
+  parsePastedWeightTable,
   isEmptyWeightTable,
   mergeWeightTableWithLayout,
   type ParsedWeightTable,
@@ -449,10 +449,64 @@ export function buildWeightImportFromSheets(
 }
 
 /**
- * Parse weight table from pasted text (more reliable than OCR for kg tables).
+ * Parse weight table from pasted text (more reliable than OCR for kg/lb tables).
  */
 export function parseWeightTableFromText(text: string): ParsedWeightTable {
-  return parseWeightTableFromRawText(text)
+  return parsePastedWeightTable(text)
+}
+
+function layoutFromWeightTable(weightTable: ParsedWeightTable): ParsedLayout {
+  const casingLengths = [...weightTable.casingSections]
+    .sort((a, b) => a.sectionNo - b.sectionNo)
+    .map((s) => s.casingLengthIn)
+    .filter((l) => l > 0)
+  const totalIn =
+    casingLengths.reduce((a, b) => a + b, 0) || weightTable.baseframeLengthIn || 0
+
+  return {
+    baseframeLengthIn: totalIn,
+    baseframeLengthMm: inchesToMm(totalIn),
+    casingSectionLengthsIn: casingLengths,
+    componentSegmentLengthsIn: [],
+    componentSegments: [],
+    weatherHoodLengthIn: 0,
+    frameWidthIn: null,
+    sourceUnit: "in",
+    layoutOrientation: "vertical",
+  }
+}
+
+/**
+ * Import from pasted Systemair weight table, with optional layout drawing for bay lengths.
+ */
+export async function processWeightTablePaste(
+  weightText: string,
+  genioxType: number,
+  layoutImage?: File | null,
+  onProgress?: (stage: string, progress: number) => void
+): Promise<SheetImportResult> {
+  onProgress?.("Parsing weights table...", 10)
+
+  const weightTable = parsePastedWeightTable(weightText)
+  if (isEmptyWeightTable(weightTable)) {
+    throw new Error(
+      "Could not parse the pasted weight table. Use the Systemair format:\n" +
+        "1 Casing Length 37.0 in 357\nCasing 241\nFilter 38\n..."
+    )
+  }
+
+  let layout: ParsedLayout
+  if (layoutImage) {
+    onProgress?.("Reading layout drawing...", 30)
+    layout = await processLayoutImage(layoutImage, (p) =>
+      onProgress?.("Reading layout drawing...", 30 + p * 0.35)
+    )
+  } else {
+    layout = layoutFromWeightTable(weightTable)
+  }
+
+  onProgress?.("Building import data...", 85)
+  return finalizeWeightSheetImport(weightTable, layout, genioxType, weightText, onProgress)
 }
 
 /**
@@ -464,18 +518,7 @@ export async function processWeightSheetsWithText(
   genioxType: number,
   onProgress?: (stage: string, progress: number) => void
 ): Promise<SheetImportResult> {
-  onProgress?.("Reading layout drawing...", 10)
-  const layout = await processLayoutImage(layoutImage, (p) =>
-    onProgress?.("Reading layout drawing...", 10 + p * 0.5)
-  )
-
-  onProgress?.("Parsing weights table...", 65)
-  let weightTable = parseWeightTableStructured(weightText)
-  if (isEmptyWeightTable(weightTable)) {
-    weightTable = parseWeightTableFromRawText(weightText)
-  }
-
-  return finalizeWeightSheetImport(weightTable, layout, genioxType, weightText, onProgress)
+  return processWeightTablePaste(weightText, genioxType, layoutImage, onProgress)
 }
 
 /**
@@ -499,12 +542,12 @@ export async function processWeightSheets(
 
   onProgress?.("Building import data...", 92)
 
-  let weightTable = parseWeightTableStructured(formattedTable)
+  let weightTable = parsePastedWeightTable(rawText)
   if (isEmptyWeightTable(weightTable)) {
-    weightTable = parseWeightTableFromRawText(rawText)
+    weightTable = parseWeightTableStructured(formattedTable)
   }
   if (isEmptyWeightTable(weightTable)) {
-    weightTable = parseWeightTableFromRawText(formattedTable)
+    weightTable = parsePastedWeightTable(formattedTable)
   }
 
   return finalizeWeightSheetImport(weightTable, layout, genioxType, rawText, onProgress)

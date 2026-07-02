@@ -125,8 +125,15 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 
   // Line-by-line parsing for components and missed headers
   for (const line of lines) {
-    const lower = line.toLowerCase()
-    if (lower.includes("section no") || lower.includes("function code")) continue
+    const lower = line.toLowerCase().trim()
+    if (
+      lower.includes("section no") ||
+      lower.includes("function code") ||
+      lower === "weights" ||
+      lower.startsWith("function code")
+    ) {
+      continue
+    }
 
     // Casing section header line (in or mm, or bare number defaulting to inches)
     if (lower.includes("casing") && lower.includes("length")) {
@@ -184,16 +191,18 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
       continue
     }
 
-    // Component row: "Name weight" — name is letters, weight is number
+    // Component row: "Filter 38", "Pre-heater 78", "Inspection section 0.2"
     const compMatch =
-      line.match(/^([A-Za-z][A-Za-z\s-]+?)\s+(\d+(?:\.\d+)?)\s*$/) ||
-      line.match(/^\d?\s*([A-Za-z][A-Za-z\s-]+?)\s+(\d+(?:\.\d+)?)\s*$/)
+      line.match(/^([A-Za-z][A-Za-z0-9\s./_-]*?)\s+(\d+(?:\.\d+)?)\s*$/i) ||
+      line.match(/^\d+\s+([A-Za-z][A-Za-z0-9\s./_-]*?)\s+(\d+(?:\.\d+)?)\s*$/i)
 
     if (compMatch && currentSection) {
       const name = compMatch[1].trim()
       const weight = parseNum(compMatch[2])
+      const isMinorRow =
+        name.toLowerCase().includes("inspection") || name.toLowerCase().includes("empty")
       if (
-        weight > 0 &&
+        (weight > 0 || isMinorRow) &&
         !name.toLowerCase().includes("length") &&
         !name.toLowerCase().includes("weight of")
       ) {
@@ -202,8 +211,8 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
       continue
     }
 
-    // Row with section number at start then component: "1  Damper  21"
-    const numberedComp = line.match(/^(\d)\s+([A-Za-z][A-Za-z\s-]+?)\s+(\d+(?:\.\d+)?)\s*$/)
+    // Legacy numbered component row: "1  Damper  21"
+    const numberedComp = line.match(/^(\d+)\s+([A-Za-z][A-Za-z0-9\s./_-]*?)\s+(\d+(?:\.\d+)?)\s*$/i)
     if (numberedComp) {
       const sectionNo = parseInt(numberedComp[1], 10)
       currentSection =
@@ -385,6 +394,22 @@ export function isEmptyWeightTable(table: ParsedWeightTable): boolean {
     table.baseframeWeightLb === 0 &&
     table.otherComponentsLb === 0
   )
+}
+
+/** Detect Systemair weight table pasted as plain text (space or tab separated). */
+export function isSystemairWeightTableText(text: string): boolean {
+  const lower = text.toLowerCase()
+  return (
+    lower.includes("casing length") &&
+    (lower.includes("weight of unit") ||
+      lower.includes("weight of function") ||
+      lower.includes("function code"))
+  )
+}
+
+/** Parse pasted Systemair weight table — always use line-by-line parser (not CSV). */
+export function parsePastedWeightTable(text: string): ParsedWeightTable {
+  return parseWeightTableFromRawText(text)
 }
 
 /** Split flat component list into per-section groups (2nd "Casing" row starts section 2). */

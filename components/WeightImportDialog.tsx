@@ -33,7 +33,8 @@ import {
   createWeightImportTemplate,
   type WeightImportData,
 } from "../utils/weightImport"
-import { processWeightSheets, processWeightSheetsWithText, type COGResult } from "../utils/weightSheetImport"
+import { processWeightSheets, processWeightTablePaste, type COGResult } from "../utils/weightSheetImport"
+import { isSystemairWeightTableText } from "../utils/weightTableParser"
 import { GENIOX_TYPES, getGenioxFrameWidth } from "../utils/genioxDimensions"
 import { calculateCOG, buildCOGItemsFromImport } from "../utils/cogCalculation"
 
@@ -139,7 +140,12 @@ export function WeightImportDialog({
       setError("Please upload the layout drawing.")
       return
     }
-    if (!pastedWeightText.trim() && !weightsImage) {
+
+    const weightText =
+      pastedWeightText.trim() ||
+      (isSystemairWeightTableText(importText) ? importText.trim() : "")
+
+    if (!weightText && !weightsImage) {
       setError("Upload a weights table screenshot or paste the weight table text below.")
       return
     }
@@ -150,11 +156,11 @@ export function WeightImportDialog({
     setPreview(null)
 
     try {
-      const result = pastedWeightText.trim()
-        ? await processWeightSheetsWithText(
-            layoutImage,
-            pastedWeightText.trim(),
+      const result = weightText
+        ? await processWeightTablePaste(
+            weightText,
             parseInt(genioxType, 10),
+            layoutImage,
             (stage, progress) => {
               setOcrStage(stage)
               setOcrProgress(progress)
@@ -212,9 +218,39 @@ export function WeightImportDialog({
     reader.readAsText(file)
   }
 
-  const handleParse = () => {
+  const handleParse = async () => {
     try {
       setError(null)
+
+      if (
+        (importType === "table" || importType === "ocr") &&
+        isSystemairWeightTableText(importText)
+      ) {
+        setIsProcessingOCR(true)
+        setPreview(null)
+        const result = await processWeightTablePaste(
+          importText.trim(),
+          parseInt(genioxType, 10),
+          layoutImage,
+          (stage, progress) => {
+            setOcrStage(stage)
+            setOcrProgress(progress)
+          }
+        )
+        setImportText(result.json)
+        setPreview({
+          sections: result.sections,
+          loads: result.loads,
+          frameLength: result.frameLength,
+          frameWidth: result.frameWidth,
+          totalRoofWeight: result.totalRoofWeight,
+          totalRoofWeightUnit: result.totalRoofWeightUnit,
+          cog: result.cog,
+          importJson: result.json,
+        })
+        return
+      }
+
       let importData: WeightImportData
 
       if (importType === "json" || importType === "ocr") {
@@ -229,6 +265,9 @@ export function WeightImportDialog({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse import data")
       setPreview(null)
+    } finally {
+      setIsProcessingOCR(false)
+      setOcrStage("")
     }
   }
 
@@ -347,19 +386,35 @@ export function WeightImportDialog({
               </div>
 
               <div>
-                <Label htmlFor="pasted-weights">Or paste weight table text (recommended for kg tables)</Label>
+                <Label htmlFor="pasted-weights">Or paste weight table text (recommended)</Label>
                 <Textarea
                   id="pasted-weights"
-                  placeholder={`Section No\tSection Code\tWeight of function\tWeight of section\nFunction Code\tkg\tkg\n1\tCasing Length 2282 mm\t\t468\n\tCasing\t257\n\tDamper\t10\n...`}
+                  placeholder={`Weights
+Section No Section Code Weight of function Weight of section
+Function Code lb lb
+1 Casing Length 37.0 in 357
+Casing 241
+Filter 38
+Pre-heater 78
+2 Casing Length 56.7 in 500
+...
+Weight of unit 1134`}
                   value={pastedWeightText}
-                  onChange={(e) => setPastedWeightText(e.target.value)}
-                  className="mt-1 font-mono text-xs min-h-[120px]"
+                  onChange={(e) => {
+                    setPastedWeightText(e.target.value)
+                    setImportText(e.target.value)
+                  }}
+                  className="mt-1 font-mono text-xs min-h-[160px]"
                 />
               </div>
 
               <Button
                 onClick={handleSheetImport}
-                disabled={isProcessingOCR || !layoutImage || (!weightsImage && !pastedWeightText.trim())}
+                disabled={
+                  isProcessingOCR ||
+                  !layoutImage ||
+                  (!weightsImage && !pastedWeightText.trim() && !isSystemairWeightTableText(importText))
+                }
                 className="w-full"
               >
                 {isProcessingOCR ? (
@@ -374,6 +429,45 @@ export function WeightImportDialog({
                   </>
                 )}
               </Button>
+            </div>
+          )}
+
+          {importType === "table" && (
+            <div className="space-y-4 border rounded-lg p-4 bg-gray-50">
+              <div>
+                <Label>Geniox Unit Type</Label>
+                <Select value={genioxType} onValueChange={setGenioxType}>
+                  <SelectTrigger className="mt-1 w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GENIOX_TYPES.map((type) => (
+                      <SelectItem key={type} value={String(type)}>
+                        Geniox {type} — {getGenioxFrameWidth(type)} mm width
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="table-layout-upload">
+                  Layout drawing (optional — for component bay lengths)
+                </Label>
+                <input
+                  id="table-layout-upload"
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setLayoutImage(e.target.files?.[0] || null)}
+                  className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {layoutImage && (
+                  <p className="text-xs text-green-600 mt-1">✓ {layoutImage.name}</p>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Paste the Systemair weight table in the box below (space-separated lines work). Click
+                Parse Data. Add a layout image for accurate component bay lengths.
+              </p>
             </div>
           )}
 
@@ -409,6 +503,12 @@ export function WeightImportDialog({
                   ? "Paste JSON data here..."
                   : importType === "ocr"
                   ? "JSON will appear here after OCR processing..."
+                  : importType === "table"
+                  ? `Paste Systemair weight table here, e.g.:
+1 Casing Length 37.0 in 357
+Casing 241
+Filter 38
+Weight of unit 1134`
                   : "Paste table or CSV data here..."
               }
               disabled={isProcessingOCR}
@@ -418,9 +518,13 @@ export function WeightImportDialog({
           </div>
 
           {importType !== "ocr" && (
-            <Button onClick={handleParse} className="w-full">
+            <Button
+              onClick={handleParse}
+              className="w-full"
+              disabled={isProcessingOCR || !importText.trim()}
+            >
               <FileText className="w-4 h-4 mr-2" />
-              Parse Data
+              {isProcessingOCR ? "Parsing..." : "Parse Data"}
             </Button>
           )}
 
