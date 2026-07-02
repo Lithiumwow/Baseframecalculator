@@ -50,6 +50,7 @@ export function inferKindFromWeightName(name: string): WeightComponentKind | nul
     return "heat_recovery"
   }
   if (n.includes("electric") && n.includes("heat")) return "electric_heat"
+  if (n.includes("pre-heater") || n.includes("preheater")) return "electric_heat"
   if (n.includes("heating coil") || n.includes("heating")) return "coil"
   if (n.includes("cooling coil") || n.includes("coil")) return "coil"
   return null

@@ -43,7 +43,7 @@ function findCasingSectionLengths(valuesIn: number[], baseframeLength: number): 
     for (let j = i + 1; j < valuesIn.length; j++) {
       const sum = valuesIn[i] + valuesIn[j]
       if (Math.abs(sum - baseframeLength) < tolerance) {
-        return [Math.max(valuesIn[i], valuesIn[j]), Math.min(valuesIn[i], valuesIn[j])]
+        return [Math.min(valuesIn[i], valuesIn[j]), Math.max(valuesIn[i], valuesIn[j])]
       }
     }
   }

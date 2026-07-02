@@ -163,12 +163,10 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
       continue
     }
 
-    // Baseframe line
+    // Baseframe line (may appear once per section — sum weights, don't use row length as total frame)
     if (lower.includes("baseframe") && lower.includes("length")) {
-      const parsed = parseLengthFromText(line)
-      if (parsed) result.baseframeLengthIn = parsed.inches
       const nums = line.match(/\d+(?:\.\d+)?/g) || []
-      if (nums.length >= 2) result.baseframeWeightLb = parseNum(nums[nums.length - 1])
+      if (nums.length >= 2) result.baseframeWeightLb += parseNum(nums[nums.length - 1])
       currentSection = null
       continue
     }
@@ -475,7 +473,7 @@ export function extractCasingLengthsFromText(
 }
 
 /**
- * Authoritative casing section lengths: weight table labels → layout → numeric pair.
+ * Authoritative casing section lengths in weight-table section order (Section 1, Section 2, …).
  */
 export function getCanonicalCasingLengthsIn(
   table: ParsedWeightTable,
@@ -484,32 +482,28 @@ export function getCanonicalCasingLengthsIn(
 ): number[] {
   const baseframeIn = table.baseframeLengthIn
 
-  const fromText = extractCasingLengthsFromText(rawText, baseframeIn)
-  if (fromText.length >= 2) {
-    return [...fromText].sort((a, b) => b - a)
-  }
-
-  const fromLayout = [...layoutLengthsIn]
-    .filter((l) => isValidCasingSectionLength(l, baseframeIn))
-    .sort((a, b) => b - a)
-  if (
-    fromLayout.length >= 2 &&
-    baseframeIn > 0 &&
-    Math.abs(fromLayout[0] + fromLayout[1] - baseframeIn) < 2
-  ) {
-    return fromLayout.slice(0, 2)
-  }
-
   const fromTable = [...table.casingSections]
     .sort((a, b) => a.sectionNo - b.sectionNo)
     .map((s) => s.casingLengthIn)
     .filter((l) => isValidCasingSectionLength(l, baseframeIn))
+  if (fromTable.length >= 2) {
+    return fromTable
+  }
+
+  const fromText = extractCasingLengthsFromText(rawText, baseframeIn)
+  if (fromText.length >= 2) {
+    return fromText
+  }
+
+  const fromLayout = [...layoutLengthsIn].filter((l) =>
+    isValidCasingSectionLength(l, baseframeIn)
+  )
   if (
-    fromTable.length >= 2 &&
+    fromLayout.length >= 2 &&
     baseframeIn > 0 &&
-    Math.abs(fromTable.reduce((a, b) => a + b, 0) - baseframeIn) < 2
+    Math.abs(fromLayout.reduce((a, b) => a + b, 0) - baseframeIn) < 3
   ) {
-    return fromTable.sort((a, b) => b - a)
+    return [...fromLayout].sort((a, b) => a - b)
   }
 
   const inferred = inferCasingLengthsIn(baseframeIn, rawText, table.casingSections)
@@ -523,7 +517,7 @@ export function getCanonicalCasingLengthsIn(
   return fromLayout.length > 0 ? fromLayout : fromTable
 }
 
-/** Apply canonical casing lengths (107.9 / 44.9 in) onto parsed weight table sections. */
+/** Apply casing lengths from weight table onto parsed sections (preserve section numbers). */
 export function applyCanonicalCasingLengths(
   table: ParsedWeightTable,
   layoutLengthsIn: number[],
@@ -538,7 +532,7 @@ export function applyCanonicalCasingLengths(
     .sort((a, b) => a.sectionNo - b.sectionNo)
     .map((s) => ({ ...s, components: [...s.components] }))
 
-  while (sections.length < 2) {
+  while (sections.length < canonical.length) {
     sections.push({
       sectionNo: sections.length + 1,
       casingLengthIn: 0,
@@ -550,11 +544,14 @@ export function applyCanonicalCasingLengths(
   canonical.forEach((lengthIn, idx) => {
     if (sections[idx]) {
       sections[idx].casingLengthIn = lengthIn
-      sections[idx].sectionNo = idx + 1
     }
   })
 
-  return normalizeSectionLengthOrder({ ...table, casingSections: sections })
+  sections.forEach((s, i) => {
+    s.sectionNo = i + 1
+  })
+
+  return { ...table, casingSections: sections }
 }
 
 /**
@@ -664,7 +661,7 @@ export function mergeWeightTableWithLayout(
 }
 
 /**
- * Section 1 is always the longer casing; swap sections if OCR reversed them.
+ * Preserve weight-table section order; do not swap by casing length.
  */
 export function normalizeSectionLengthOrder(
   table: ParsedWeightTable
@@ -674,17 +671,6 @@ export function normalizeSectionLengthOrder(
     components: [...s.components],
   }))
 
-  if (sections.length >= 2) {
-    const len0 = sections[0].casingLengthIn
-    const len1 = sections[1].casingLengthIn
-    if (len0 > 0 && len1 > 0 && len0 < len1) {
-      const swapped = sections[1]
-      sections[1] = { ...sections[0], sectionNo: 2 }
-      sections[0] = { ...swapped, sectionNo: 1 }
-    }
-  }
-
-  // Multi-section only: clear mistaken full-baseframe value on one of two sections
   if (table.baseframeLengthIn > 0 && sections.length > 1) {
     sections.forEach((s) => {
       if (Math.abs(s.casingLengthIn - table.baseframeLengthIn) < 1.5) {
@@ -693,6 +679,7 @@ export function normalizeSectionLengthOrder(
     })
   }
 
+  sections.sort((a, b) => a.sectionNo - b.sectionNo)
   sections.forEach((s, i) => {
     s.sectionNo = i + 1
   })
@@ -700,26 +687,26 @@ export function normalizeSectionLengthOrder(
   return { ...table, casingSections: sections }
 }
 
-/** Infer casing section lengths (in) that sum to baseframe length. */
+/** Infer casing section lengths (in) in section-number order when possible. */
 export function inferCasingLengthsIn(
   baseframeLengthIn: number,
   rawText: string,
   existingSections: ParsedWeightTable["casingSections"]
 ): number[] {
-  const fromSections = existingSections
-    .map((s) => s.casingLengthIn)
-    .filter((l) => isValidCasingSectionLength(l, baseframeLengthIn))
-    .sort((a, b) => b - a)
-  if (
-    fromSections.length >= 2 &&
-    Math.abs(fromSections[0] + fromSections[1] - baseframeLengthIn) < 2
-  ) {
-    return fromSections
-  }
-
   const fromLabels = extractCasingLengthsFromText(rawText, baseframeLengthIn)
   if (fromLabels.length >= 2) {
-    return [...fromLabels].sort((a, b) => b - a)
+    return fromLabels
+  }
+
+  const fromSections = existingSections
+    .sort((a, b) => a.sectionNo - b.sectionNo)
+    .map((s) => s.casingLengthIn)
+    .filter((l) => isValidCasingSectionLength(l, baseframeLengthIn))
+  if (
+    fromSections.length >= 2 &&
+    Math.abs(fromSections.reduce((a, b) => a + b, 0) - baseframeLengthIn) < 3
+  ) {
+    return fromSections
   }
 
   const nums = [...rawText.matchAll(/\d+(?:\.\d+)?/g)].map((m) => parseFloat(m[0]))
@@ -727,7 +714,7 @@ export function inferCasingLengthsIn(
     ...new Set(
       nums.filter(
         (n) =>
-          n >= 30 &&
+          n >= 15 &&
           n <= 130 &&
           isValidCasingSectionLength(n, baseframeLengthIn)
       )
@@ -737,8 +724,8 @@ export function inferCasingLengthsIn(
   for (let i = 0; i < candidates.length; i++) {
     for (let j = i + 1; j < candidates.length; j++) {
       const sum = candidates[i] + candidates[j]
-      if (Math.abs(sum - baseframeLengthIn) < 2) {
-        return [Math.max(candidates[i], candidates[j]), Math.min(candidates[i], candidates[j])]
+      if (Math.abs(sum - baseframeLengthIn) < 3) {
+        return [Math.min(candidates[i], candidates[j]), Math.max(candidates[i], candidates[j])]
       }
     }
   }

@@ -167,15 +167,7 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
 
   for (const row of rows) {
     if (row.sectionCode.toLowerCase().includes("baseframe length")) {
-      const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
-      if (lengthMatch) {
-        const parsed = parseLengthFromText(lengthMatch[0])
-        baseframeLengthIn = parsed?.inches ?? 0
-      } else {
-        const parsed = parseLengthFromText(row.sectionCode)
-        baseframeLengthIn = parsed?.inches ?? 0
-      }
-      baseframeWeightLb = row.sectionWeight
+      baseframeWeightLb += row.sectionWeight
     }
   }
 
@@ -206,15 +198,7 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
       }
       casingSections.push(currentCasing)
     } else if (code.includes("baseframe length")) {
-      const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
-      if (lengthMatch) {
-        const parsed = parseLengthFromText(lengthMatch[0])
-        baseframeLengthIn = parsed?.inches ?? 0
-      } else {
-        const parsed = parseLengthFromText(row.sectionCode)
-        baseframeLengthIn = parsed?.inches ?? 0
-      }
-      baseframeWeightLb = row.sectionWeight
+      baseframeWeightLb += row.sectionWeight
       currentCasing = null
     } else if (code.includes("other components")) {
       otherComponentsLb = row.sectionWeight
@@ -278,7 +262,7 @@ function assignComponentLoads(
     resolvedLengthsIn.length > 0 && resolvedLengthsIn.every((l) => l > 0)
       ? resolvedLengthsIn
       : layout.casingSectionLengthsIn.length > 0
-        ? [...layout.casingSectionLengthsIn].sort((a, b) => b - a)
+        ? [...layout.casingSectionLengthsIn]
         : orderedSections.map((s) => s.casingLengthIn)
   )
 
@@ -297,8 +281,8 @@ function assignComponentLoads(
     )
 
     const useDualDeck =
-      layout.layoutOrientation === "horizontal" ||
-      (sectionSegments.length > 0 && looksLikeDualDeckWeightTable(sectionComponents))
+      layout.layoutOrientation === "horizontal" &&
+      looksLikeDualDeckWeightTable(sectionComponents)
 
     if (useDualDeck && sectionSegments.length > 0) {
       components.push(
@@ -554,6 +538,13 @@ async function finalizeWeightSheetImport(
     casingLengthsForMerge,
     rawText
   )
+
+  const casingSumIn = weightTable.casingSections.reduce((s, c) => s + (c.casingLengthIn || 0), 0)
+  if (layout.baseframeLengthIn > 0) {
+    weightTable.baseframeLengthIn = layout.baseframeLengthIn
+  } else if (casingSumIn > 0) {
+    weightTable.baseframeLengthIn = casingSumIn
+  }
 
   if (isEmptyWeightTable(weightTable)) {
     throw new Error(
