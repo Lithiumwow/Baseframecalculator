@@ -4,6 +4,9 @@ import type { MaterialProperties } from "../types"
 import { standardMaterials } from "../constants"
 import { validateNumber, validatePositive } from "../utils/validation"
 import { getLoadMagnitudeInN, convertSectionWeightToN, getDistributedLoadTotalWeightN } from "../utils/conversions"
+import { collectLegSupportPositionsMm } from "../utils/sectionSupports"
+import { analyzeMultispanBeam, buildLongitudinalBeamLoads } from "../utils/multispanBeam"
+import { computeLiftingAnalysis } from "../utils/liftingAnalysis"
 
 interface UseBeamCalculationsParams {
   analysisType: "Simple Beam" | "Base Frame"
@@ -123,6 +126,13 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
     let transverseBendingMoment = 0
     let governingBeamDirection: "longitudinal" | "transverse" = "longitudinal"
     let governingBeamSpanMm = 0
+    let legSupportPositionsMm: number[] = []
+    let usedMultispanAnalysis = false
+    let liftingAnalysis: import("../types").LiftingAnalysis | null = null
+    let multispanLineSegments: import("../utils/multispanBeam").LineLoadSegment[] = []
+    let multispanPointLoads: import("../utils/multispanBeam").PointLoadOnBeam[] = []
+    let longitudinalSpanM = 0
+    let transverseSpanM = 0
 
     if (analysisType === "Simple Beam") {
       // Single beam analysis
@@ -395,23 +405,21 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
         totalAppliedLoad += otherComponentsN
       }
 
-      // Calculate critical beam lengths for both frame directions
-      const longitudinalSpanM = frameLengthM
-      const transverseSpanM = frameWidthM
+      longitudinalSpanM = frameLengthM
+      transverseSpanM = frameWidthM
 
       // Each of 4 perimeter beams carries ~1/4 of total load (simplified frame model)
       loadPerBeam = totalAppliedLoad / 4
 
-      const longitudinalBendingMoment =
+      longitudinalBendingMoment =
         (loadPerBeam / longitudinalSpanM) * Math.pow(longitudinalSpanM, 2) / 8
-      const transverseBendingMoment =
+      transverseBendingMoment =
         (loadPerBeam / transverseSpanM) * Math.pow(transverseSpanM, 2) / 8
 
-      const governingBeamDirection: "longitudinal" | "transverse" =
+      governingBeamDirection =
         transverseBendingMoment > longitudinalBendingMoment ? "transverse" : "longitudinal"
-      const governingBeamSpanM =
-        governingBeamDirection === "transverse" ? transverseSpanM : longitudinalSpanM
-      const governingBeamSpanMm = governingBeamSpanM * 1000
+      governingBeamSpanMm =
+        (governingBeamDirection === "transverse" ? transverseSpanM : longitudinalSpanM) * 1000
 
       maxBendingMoment = Math.max(longitudinalBendingMoment, transverseBendingMoment)
       maxShearForce = loadPerBeam / 2
@@ -419,6 +427,19 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
       const maxCornerReaction = Math.max(R1, R2, R3, R4)
       cornerReactionForce = maxCornerReaction
       cornerReactions = { R1, R2, R3, R4 }
+
+      legSupportPositionsMm = collectLegSupportPositionsMm(sections, validFrameLength)
+      const beamLoads = buildLongitudinalBeamLoads(
+        loads,
+        sections,
+        validFrameLength,
+        totalRoofWeight,
+        totalRoofWeightUnit,
+        otherComponentsWeight,
+        otherComponentsWeightUnit
+      )
+      multispanLineSegments = beamLoads.lineSegments
+      multispanPointLoads = beamLoads.pointLoads
       
       // Debug logging (can be removed in production)
       if (process.env.NODE_ENV === 'development') {
@@ -476,26 +497,68 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
         sectionModulus = momentOfInertia / (heightM / 2)
     }
 
-    // Calculate stresses
-    const maxNormalStress = maxBendingMoment / sectionModulus / 1e6 // Convert to MPa
-    const maxShearStress = (1.5 * maxShearForce) / area / 1e6 // Convert to MPa
-
-    // Calculate safety factor
-    const safetyFactor = materialProps.yieldStrength > 0 ? materialProps.yieldStrength / maxNormalStress : 0
+    // Calculate stresses (recalculated after multispan may update max moment / shear)
+    let maxNormalStress = 0
+    let maxShearStress = 0
+    let safetyFactor = 0
 
     // Calculate deflection
     const E = materialProps.elasticModulus * 1e9 // Convert GPa to Pa
     let maxDeflection = 0
     if (analysisType === "Simple Beam") {
       maxDeflection =
-        E > 0 ? (5 * totalAppliedLoad * Math.pow(beamLengthM, 4)) / (384 * E * momentOfInertia) : 0
+        E > 0 ? (5 * totalAppliedLoad * Math.pow(beamLengthM, 3)) / (384 * E * momentOfInertia) : 0
     } else if (E > 0) {
+      const multispan =
+        multispanLineSegments.length > 0
+          ? analyzeMultispanBeam(
+              legSupportPositionsMm,
+              multispanLineSegments,
+              multispanPointLoads,
+              E,
+              momentOfInertia
+            )
+          : null
+
+      if (multispan) {
+        usedMultispanAnalysis = true
+        longitudinalBendingMoment = multispan.maxMomentNm
+        maxShearForce = Math.max(maxShearForce, multispan.maxShearN)
+        maxBendingMoment = Math.max(longitudinalBendingMoment, transverseBendingMoment)
+        governingBeamDirection =
+          transverseBendingMoment > longitudinalBendingMoment ? "transverse" : "longitudinal"
+        governingBeamSpanMm =
+          governingBeamDirection === "transverse"
+            ? transverseSpanM * 1000
+            : multispan.governingSpanMm || longitudinalSpanM * 1000
+
+        liftingAnalysis = computeLiftingAnalysis(
+          sections,
+          validFrameLength,
+          totalAppliedLoad,
+          multispanLineSegments,
+          multispanPointLoads,
+          E,
+          momentOfInertia
+        )
+      }
+
       const deflectionLong =
-        (5 * loadPerBeam * Math.pow(frameLengthM, 4)) / (384 * E * momentOfInertia)
+        (5 * loadPerBeam * Math.pow(frameLengthM, 3)) / (384 * E * momentOfInertia)
       const deflectionTrans =
-        (5 * loadPerBeam * Math.pow(frameWidthM, 4)) / (384 * E * momentOfInertia)
-      maxDeflection = Math.max(deflectionLong, deflectionTrans)
+        (5 * loadPerBeam * Math.pow(frameWidthM, 3)) / (384 * E * momentOfInertia)
+      const uniformDeflection = Math.max(deflectionLong, deflectionTrans)
+      maxDeflection = multispan
+        ? Math.max(multispan.maxDeflectionMm / 1000, uniformDeflection)
+        : uniformDeflection
     }
+
+    maxNormalStress = sectionModulus > 0 ? maxBendingMoment / sectionModulus / 1e6 : 0
+    maxShearStress = area > 0 ? (1.5 * maxShearForce) / area / 1e6 : 0
+    safetyFactor =
+      materialProps.yieldStrength > 0 && maxNormalStress > 0
+        ? materialProps.yieldStrength / maxNormalStress
+        : 0
 
     setResults({
       maxShearForce: Number(maxShearForce.toFixed(2)),
@@ -520,6 +583,9 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
       transverseBendingMoment: Number(transverseBendingMoment.toFixed(2)),
       governingBeamDirection,
       governingBeamSpanMm: Number(governingBeamSpanMm.toFixed(1)),
+      legSupportPositionsMm,
+      usedMultispanAnalysis,
+      liftingAnalysis,
     })
   }, [
     analysisType,

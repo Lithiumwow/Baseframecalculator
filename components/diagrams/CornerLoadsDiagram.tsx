@@ -2,6 +2,7 @@ import type React from "react"
 import type { Load, Section } from "../../types"
 import { validateNumber, validatePositive } from "../../utils/validation"
 import { nToKg, nToLbs, getDistributedLoadTotalWeightN } from "../../utils/conversions"
+import { sectionBoundaryHasLeg, sectionBoundaryHasLug } from "../../utils/sectionSupports"
 
 interface CornerLoadsDiagramProps {
   frameLength: number
@@ -130,30 +131,32 @@ export const CornerLoadsDiagram: React.FC<CornerLoadsDiagramProps> = ({
               />
             )}
             
-            {/* Support indicator at section start (if not first section) */}
-            {index > 0 && section.supportType && section.supportType !== "none" && (
+            {index > 0 && (sectionBoundaryHasLeg(section) || sectionBoundaryHasLug(section)) && (
               <g>
-                {/* Support line */}
-                <line
-                  x1={supportX}
-                  y1={frameRect.y + frameRect.height}
-                  x2={supportX}
-                  y2={frameRect.y + frameRect.height + 15}
-                  stroke={section.supportType === "leg" ? "#0066cc" : "#cc6600"}
-                  strokeWidth="2.5"
-                />
-                {/* Leg support - triangle pointing down */}
-                {section.supportType === "leg" && (
-                  <polygon
-                    points={`${supportX - 6},${frameRect.y + frameRect.height + 15} ${supportX + 6},${frameRect.y + frameRect.height + 15} ${supportX},${frameRect.y + frameRect.height + 22}`}
-                    fill="#0066cc"
-                  />
+                {sectionBoundaryHasLeg(section) && (
+                  <>
+                    <line
+                      x1={supportX}
+                      y1={frameRect.y + frameRect.height}
+                      x2={supportX}
+                      y2={frameRect.y + frameRect.height + 15}
+                      stroke="#0066cc"
+                      strokeWidth="2.5"
+                    />
+                    <polygon
+                      points={`${supportX - 6},${frameRect.y + frameRect.height + 15} ${supportX + 6},${frameRect.y + frameRect.height + 15} ${supportX},${frameRect.y + frameRect.height + 22}`}
+                      fill="#0066cc"
+                    />
+                  </>
                 )}
-                {/* Hook support - inverted triangle */}
-                {section.supportType === "hook" && (
-                  <polygon
-                    points={`${supportX - 6},${frameRect.y + frameRect.height + 15} ${supportX + 6},${frameRect.y + frameRect.height + 15} ${supportX},${frameRect.y + frameRect.height + 8}`}
+                {sectionBoundaryHasLug(section) && (
+                  <circle
+                    cx={supportX}
+                    cy={frameRect.y - 6}
+                    r={5}
                     fill="#cc6600"
+                    stroke="#993300"
+                    strokeWidth="1.5"
                   />
                 )}
               </g>

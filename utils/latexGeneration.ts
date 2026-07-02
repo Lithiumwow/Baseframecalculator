@@ -286,11 +286,8 @@ Maximum Deflection & ${formatNumber(results.maxDeflection * 1000, 2)} & \\si{\\m
 `
 
   if (sections.length > 0) {
-    latex += `\\item Section supports are indicated as follows:
-\\begin{itemize}
-\\item Leg support: Ground support at section boundary
-\\item Hook support: Lifting prevention at section boundary
-\\end{itemize}
+    latex += `\\item Leg supports at section boundaries define multi-span beam spans for service-case V/M/deflection.
+\\item Lifting lugs are screened separately (equal static share per lug; optional rated capacity).
 `
   }
 

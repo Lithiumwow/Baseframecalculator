@@ -9,7 +9,32 @@ export interface Section {
   roofWeight: number // Roof weight for this section (kg) - calculated from total roof weight
   roofWeightUnit: "N" | "kg" | "lbs"
   name?: string // Optional section name
-  supportType?: "leg" | "hook" | "none" // Support type at section boundary
+  /** @deprecated Use hasLeg / hasLug — kept for imported sessions */
+  supportType?: "leg" | "hook" | "none"
+  /** Ground support beam at this section's start boundary (index > 0) */
+  hasLeg?: boolean
+  /** Lifting lug at this section's start boundary — implies hasLeg */
+  hasLug?: boolean
+  /** Optional rated lug capacity (N) for lift screening */
+  lugCapacityN?: number
+}
+
+export interface LugPointSummary {
+  positionMm: number
+  sectionName: string
+  shareForceN: number
+  nearestLegMm: number
+  distanceToLegMm: number
+  lugCapacityN?: number
+  capacityUtilization?: number
+}
+
+export interface LiftingAnalysis {
+  lugPoints: LugPointSummary[]
+  lugCount: number
+  liftCaseMaxDeflectionMm: number
+  maxLiftSpanMm: number
+  equalSharePerLugN: number
 }
 
 export interface Load {
@@ -54,5 +79,10 @@ export interface Results {
   /** Which perimeter beam direction governs stress/deflection */
   governingBeamDirection: "longitudinal" | "transverse"
   governingBeamSpanMm: number
+  /** Leg support positions used for multi-span beam model (mm) */
+  legSupportPositionsMm?: number[]
+  /** True when V/M/deflection use multi-span model between legs */
+  usedMultispanAnalysis?: boolean
+  liftingAnalysis?: LiftingAnalysis | null
 }
 

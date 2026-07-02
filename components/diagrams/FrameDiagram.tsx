@@ -2,6 +2,7 @@ import type React from "react"
 import type { Load, Section } from "../../types"
 import { validateNumber, validatePositive } from "../../utils/validation"
 import { getDistributedLoadTotalWeightN } from "../../utils/conversions"
+import { sectionBoundaryHasLeg, sectionBoundaryHasLug } from "../../utils/sectionSupports"
 
 interface FrameDiagramProps {
   frameLength: number
@@ -109,42 +110,56 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({
               />
             )}
             
-            {/* Support indicator at section start (if not first section) */}
-            {index > 0 && section.supportType && section.supportType !== "none" && (
+            {/* Leg + lug indicators at section start (if not first section) */}
+            {index > 0 && (sectionBoundaryHasLeg(section) || sectionBoundaryHasLug(section)) && (
               <g>
-                {/* Support line */}
-                <line
-                  x1={supportX}
-                  y1={frameRect.y + frameRect.height}
-                  x2={supportX}
-                  y2={frameRect.y + frameRect.height + 20}
-                  stroke={section.supportType === "leg" ? "#0066cc" : "#cc6600"}
-                  strokeWidth="3"
-                />
-                {/* Leg support (ground support) - triangle pointing down */}
-                {section.supportType === "leg" && (
-                  <polygon
-                    points={`${supportX - 8},${frameRect.y + frameRect.height + 20} ${supportX + 8},${frameRect.y + frameRect.height + 20} ${supportX},${frameRect.y + frameRect.height + 28}`}
-                    fill="#0066cc"
-                  />
+                {sectionBoundaryHasLeg(section) && (
+                  <>
+                    <line
+                      x1={supportX}
+                      y1={frameRect.y + frameRect.height}
+                      x2={supportX}
+                      y2={frameRect.y + frameRect.height + 20}
+                      stroke="#0066cc"
+                      strokeWidth="3"
+                    />
+                    <polygon
+                      points={`${supportX - 8},${frameRect.y + frameRect.height + 20} ${supportX + 8},${frameRect.y + frameRect.height + 20} ${supportX},${frameRect.y + frameRect.height + 28}`}
+                      fill="#0066cc"
+                    />
+                  </>
                 )}
-                {/* Hook support (lifting prevention) - inverted triangle */}
-                {section.supportType === "hook" && (
-                  <polygon
-                    points={`${supportX - 8},${frameRect.y + frameRect.height + 20} ${supportX + 8},${frameRect.y + frameRect.height + 20} ${supportX},${frameRect.y + frameRect.height + 12}`}
-                    fill="#cc6600"
-                  />
+                {sectionBoundaryHasLug(section) && (
+                  <>
+                    <circle
+                      cx={supportX}
+                      cy={frameRect.y - 8}
+                      r={6}
+                      fill="#cc6600"
+                      stroke="#993300"
+                      strokeWidth="1.5"
+                    />
+                    <line
+                      x1={supportX}
+                      y1={frameRect.y - 2}
+                      x2={supportX}
+                      y2={frameRect.y + 5}
+                      stroke="#cc6600"
+                      strokeWidth="2"
+                    />
+                  </>
                 )}
-                {/* Support label */}
                 <text
                   x={supportX}
-                  y={frameRect.y + frameRect.height + 40}
+                  y={frameRect.y + frameRect.height + 42}
                   textAnchor="middle"
                   fontSize="9"
-                  fill={section.supportType === "leg" ? "#0066cc" : "#cc6600"}
+                  fill="#333"
                   fontWeight="bold"
                 >
-                  {section.supportType === "leg" ? "Leg" : "Hook"}
+                  {[sectionBoundaryHasLeg(section) && "Leg", sectionBoundaryHasLug(section) && "Lug"]
+                    .filter(Boolean)
+                    .join(" + ")}
                 </text>
               </g>
             )}

@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts"
 import Head from "next/head"
 import { Download, Loader2, Calculator, Mail, BarChart3, Ruler, Package, Tag, Info, RotateCcw, CheckCircle, AlertCircle } from "lucide-react"
@@ -29,6 +30,7 @@ import {
 import { buildSessionLog, downloadSessionLog } from "./utils/sessionLogExport"
 import { useBeamCalculations } from "./hooks/useBeamCalculations"
 import { useDiagramCalculations } from "./hooks/useDiagramCalculations"
+import { sectionBoundaryHasLeg, sectionBoundaryHasLug } from "./utils/sectionSupports"
 import { generatePDF } from "./utils/pdfGeneration"
 import { generateLaTeX, downloadLaTeX } from "./utils/latexGeneration"
 import {
@@ -313,9 +315,14 @@ export default function BeamLoadCalculator() {
     leftSupport,
     rightSupport,
     loads,
+    sections,
     results,
     material,
     customMaterial,
+    totalRoofWeight,
+    totalRoofWeightUnit,
+    otherComponentsWeight,
+    otherComponentsWeightUnit,
     setShearForceData,
     setBendingMomentData,
     setDeflectionData,
@@ -441,8 +448,8 @@ export default function BeamLoadCalculator() {
       newStartPosition = lastSection.endPosition
       // Automatically add leg support to previous section at its end position (if not already set)
       const lastIndex = sections.length - 1
-      if (!updatedSections[lastIndex].supportType) {
-        updatedSections[lastIndex] = { ...updatedSections[lastIndex], supportType: "leg" }
+      if (!updatedSections[lastIndex].hasLeg && !updatedSections[lastIndex].supportType) {
+        updatedSections[lastIndex] = { ...updatedSections[lastIndex], hasLeg: true }
       }
     }
     
@@ -457,7 +464,8 @@ export default function BeamLoadCalculator() {
       roofWeight: 0,
       roofWeightUnit: "kg",
       name: `Section ${sections.length + 1}`,
-      supportType: sections.length > 0 ? "leg" : undefined, // Add support at start if not first section
+      hasLeg: sections.length > 0,
+      hasLug: false,
     }
     
     setSections([...updatedSections, newSection])
@@ -1077,29 +1085,59 @@ export default function BeamLoadCalculator() {
                       />
                     </div>
                     {index > 0 && (
-                      <div className="col-span-2">
-                        <Label htmlFor={`section-support-${section.id}`}>
-                          Support at Start Position ({section.startPosition} mm)
-                        </Label>
-                        <Select
-                          value={section.supportType || "leg"}
-                          onValueChange={(value: string) => {
-                            updateSection(section.id, { supportType: value as "leg" | "hook" | "none" })
-                          }}
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="leg">Leg Support (Ground Support)</SelectItem>
-                            <SelectItem value="hook">Hook Support (Lifting Prevention)</SelectItem>
-                            <SelectItem value="none">No Support</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <div className="text-xs text-gray-500 mt-1">
-                          {section.supportType === "leg" && "✓ Supports frame on ground at this position"}
-                          {section.supportType === "hook" && "✓ Prevents frame from lifting at this position"}
-                          {(!section.supportType || section.supportType === "none") && "No support at this boundary"}
+                      <div className="col-span-2 space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                        <Label>Boundary at {section.startPosition} mm</Label>
+                        <div className="flex flex-wrap gap-6">
+                          <label className="flex items-center gap-2 text-sm cursor-pointer">
+                            <Checkbox
+                              checked={sectionBoundaryHasLeg(section)}
+                              onCheckedChange={(checked) => {
+                                const hasLeg = checked === true
+                                updateSection(section.id, {
+                                  hasLeg,
+                                  hasLug: hasLeg ? sectionBoundaryHasLug(section) : false,
+                                })
+                              }}
+                            />
+                            <span>Leg support (ground beam)</span>
+                          </label>
+                          <label className="flex items-center gap-2 text-sm cursor-pointer">
+                            <Checkbox
+                              checked={sectionBoundaryHasLug(section)}
+                              onCheckedChange={(checked) => {
+                                const hasLug = checked === true
+                                updateSection(section.id, {
+                                  hasLug,
+                                  hasLeg: hasLug ? true : sectionBoundaryHasLeg(section),
+                                })
+                              }}
+                            />
+                            <span>Lifting lug</span>
+                          </label>
+                        </div>
+                        <div className="text-xs text-gray-600 space-y-1">
+                          <p>Leg supports define beam spans for sag / bending diagrams (service case).</p>
+                          <p>Lifting lugs are used for lift screening — a lug always implies a leg at the same joint.</p>
+                        </div>
+                        <div className="flex gap-2 items-end">
+                          <div className="flex-1">
+                            <Label htmlFor={`lug-capacity-${section.id}`} className="text-xs">
+                              Lug capacity (N, optional)
+                            </Label>
+                            <Input
+                              type="number"
+                              id={`lug-capacity-${section.id}`}
+                              min={0}
+                              placeholder="Rated capacity"
+                              value={section.lugCapacityN ?? ""}
+                              onChange={(e) =>
+                                updateSection(section.id, {
+                                  lugCapacityN: e.target.value ? Number(e.target.value) : undefined,
+                                })
+                              }
+                              disabled={!sectionBoundaryHasLug(section)}
+                            />
+                          </div>
                         </div>
                       </div>
                     )}
@@ -1807,6 +1845,15 @@ export default function BeamLoadCalculator() {
                 </div>
               </div>
             )}
+              {analysisType === "Base Frame" && results.usedMultispanAnalysis && (
+                <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+                  <strong>Multi-span beam model:</strong> V/M/deflection diagrams use leg support positions
+                  {results.legSupportPositionsMm && results.legSupportPositionsMm.length > 0 && (
+                    <> ({results.legSupportPositionsMm.map((p) => `${p.toFixed(0)}`).join(", ")} mm)</>
+                  )}
+                  {" "}with actual patch loads on one longitudinal beam (50% of gravity load).
+                </div>
+              )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               <div className="text-center p-4 bg-blue-50 rounded-lg border border-blue-200">
                 <div className="text-2xl font-bold text-blue-600">{results.maxShearForce}</div>
@@ -1934,6 +1981,63 @@ export default function BeamLoadCalculator() {
                 </>
               )}
             </div>
+            {analysisType === "Base Frame" && results.liftingAnalysis && (
+              <div className="mt-6 rounded-lg border border-orange-200 bg-orange-50 p-4">
+                <h3 className="font-semibold text-orange-900 mb-2">Lifting lug screening</h3>
+                <p className="text-xs text-orange-800 mb-3">
+                  Equal share of total weight per lug (static). Lift-case sag uses lug positions as
+                  supports — screening only, not rigging sign-off.
+                </p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4 text-sm">
+                  <div>
+                    <span className="text-gray-600">Lugs:</span>{" "}
+                    <strong>{results.liftingAnalysis.lugCount}</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Share / lug:</span>{" "}
+                    <strong>{(results.liftingAnalysis.equalSharePerLugN / 1000).toFixed(1)} kN</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Max lift span:</span>{" "}
+                    <strong>{results.liftingAnalysis.maxLiftSpanMm.toFixed(0)} mm</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Lift-case sag:</span>{" "}
+                    <strong>{results.liftingAnalysis.liftCaseMaxDeflectionMm.toFixed(1)} mm</strong>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-orange-200 text-left">
+                        <th className="py-1 pr-2">Position</th>
+                        <th className="py-1 pr-2">Section</th>
+                        <th className="py-1 pr-2">Share (N)</th>
+                        <th className="py-1 pr-2">Nearest leg</th>
+                        <th className="py-1 pr-2">Dist. to leg</th>
+                        <th className="py-1">Capacity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {results.liftingAnalysis.lugPoints.map((lug) => (
+                        <tr key={lug.positionMm} className="border-b border-orange-100">
+                          <td className="py-1 pr-2">{lug.positionMm.toFixed(0)} mm</td>
+                          <td className="py-1 pr-2">{lug.sectionName}</td>
+                          <td className="py-1 pr-2">{lug.shareForceN.toFixed(0)}</td>
+                          <td className="py-1 pr-2">{lug.nearestLegMm.toFixed(0)} mm</td>
+                          <td className="py-1 pr-2">{lug.distanceToLegMm.toFixed(0)} mm</td>
+                          <td className="py-1">
+                            {lug.lugCapacityN
+                              ? `${((lug.capacityUtilization ?? 0) * 100).toFixed(0)}% of ${lug.lugCapacityN.toFixed(0)} N`
+                              : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
             {analysisType === "Base Frame" && (
               <p className="text-xs text-gray-500 mt-4 px-1">
                 Max corner reaction and longitudinal stress often stay unchanged when the unit length

@@ -251,6 +251,8 @@ export function convertImportedSections(
       roofWeight: imported.roofWeight || 0,
       roofWeightUnit: imported.roofWeightUnit || "kg",
       name: imported.name || `Section ${index + 1}`,
+      hasLeg: index > 0,
+      hasLug: false,
     }
 
     if (section.endPosition > frameLength) {
