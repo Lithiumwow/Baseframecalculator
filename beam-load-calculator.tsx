@@ -2117,8 +2117,8 @@ export default function BeamLoadCalculator() {
             </CardHeader>
             <CardContent className="p-4">
               <div id="shear-force-diagram" style={{ width: "100%", height: 250, minWidth: 0, minHeight: 250 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  {shearForceData.length > 0 && (
+                {shearForceData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={shearForceData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis 
@@ -2134,8 +2134,12 @@ export default function BeamLoadCalculator() {
                       <Area type="monotone" dataKey="y" stroke="#8884d8" fill="#8884d8" />
                       <ReferenceLine y={0} stroke="#000" strokeDasharray="3 3" />
                     </AreaChart>
-                  )}
-                </ResponsiveContainer>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    No diagram data yet
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -2150,8 +2154,8 @@ export default function BeamLoadCalculator() {
             </CardHeader>
             <CardContent className="p-4">
               <div id="bending-moment-diagram" style={{ width: "100%", height: 250, minWidth: 0, minHeight: 250 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  {bendingMomentData.length > 0 && (
+                {bendingMomentData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={bendingMomentData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis 
@@ -2167,8 +2171,12 @@ export default function BeamLoadCalculator() {
                       <Area type="monotone" dataKey="y" stroke="#82ca9d" fill="#82ca9d" />
                       <ReferenceLine y={0} stroke="#000" strokeDasharray="3 3" />
                     </AreaChart>
-                  )}
-                </ResponsiveContainer>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    No diagram data yet
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -2183,8 +2191,8 @@ export default function BeamLoadCalculator() {
             </CardHeader>
             <CardContent className="p-4">
               <div id="deflection-diagram" style={{ width: "100%", height: 250, minWidth: 0, minHeight: 250 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  {deflectionData.length > 0 && (
+                {deflectionData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={deflectionData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
                       <CartesianGrid strokeDasharray="3 3" />
                       <XAxis 
@@ -2200,8 +2208,12 @@ export default function BeamLoadCalculator() {
                       <Area type="monotone" dataKey="y" stroke="#ff7300" fill="#ff7300" />
                       <ReferenceLine y={0} stroke="#000" strokeDasharray="3 3" />
                     </AreaChart>
-                  )}
-                </ResponsiveContainer>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    No diagram data yet
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

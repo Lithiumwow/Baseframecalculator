@@ -175,10 +175,7 @@ export function useDiagramCalculations(params: UseDiagramCalculationsParams) {
         deflection.push({ x: Number(x.toFixed(2)), y: Number((delta * 1000).toFixed(4)) })
       }
     } else {
-      const legPositions =
-        results.legSupportPositionsMm?.length
-          ? results.legSupportPositionsMm
-          : collectLegSupportPositionsMm(sections, validFrameLength)
+      const legPositions = collectLegSupportPositionsMm(sections, validFrameLength)
 
       const beamLoads = buildLongitudinalBeamLoads(
         loads,
@@ -238,7 +235,6 @@ export function useDiagramCalculations(params: UseDiagramCalculationsParams) {
     sections,
     results.totalAppliedLoad,
     results.momentOfInertia,
-    results.legSupportPositionsMm,
     material,
     customMaterial,
     totalRoofWeight,
