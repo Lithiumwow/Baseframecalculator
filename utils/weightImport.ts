@@ -19,6 +19,8 @@ export interface WeightImportData {
   components?: WeightImportComponent[]
   totalWeights?: {
     roof?: number
+    /** Weather hood, connections, etc. — counted in COG but not section roof fields */
+    otherComponents?: number
     baseframe?: number
     unit?: "N" | "kg" | "lbs"
   }
@@ -335,8 +337,10 @@ export function generateLoadsFromTotalWeights(
     const sectionRoofWeight = roofWeightPerMM * sectionLength
     const sectionBaseframeWeight = baseframeWeightPerMM * sectionLength
 
-    section.roofWeight = sectionRoofWeight
-    section.roofWeightUnit = weightUnit
+    if (totalRoofWeight > 0) {
+      section.roofWeight = sectionRoofWeight
+      section.roofWeightUnit = weightUnit
+    }
 
     if (!section.baseframeWeight || section.baseframeWeight <= 0) {
       section.baseframeWeight = sectionBaseframeWeight

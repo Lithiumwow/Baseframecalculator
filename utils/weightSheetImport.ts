@@ -166,12 +166,6 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
   let currentCasing: ParsedWeightTable["casingSections"][0] | null = null
 
   for (const row of rows) {
-    if (row.sectionCode.toLowerCase().includes("baseframe length")) {
-      baseframeWeightLb += row.sectionWeight
-    }
-  }
-
-  for (const row of rows) {
     const code = row.sectionCode.toLowerCase()
     const func = row.functionCode.toLowerCase()
 
@@ -220,6 +214,7 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
 
   return {
     casingSections,
+    baseframeByCasingLengthIn: [],
     baseframeLengthIn,
     baseframeWeightLb,
     otherComponentsLb,
@@ -404,6 +399,15 @@ export function buildWeightImportFromSheets(
     const casingComp = cs.components.find((c) => c.name.toLowerCase().trim() === "casing")
     const casingShellWeight = casingComp?.weightLb ?? 0
 
+    const sectionBaseframe =
+      cs.sectionBaseframeWeightLb ??
+      weightTable.baseframeByCasingLengthIn.find((b) =>
+        Math.abs(b.lengthIn - lengthIn) < 0.6
+      )?.weightLb ??
+      (totalCasingLengthIn > 0
+        ? Math.round(weightTable.baseframeWeightLb * lengthRatio * 10) / 10
+        : 0)
+
     const section: WeightImportSection = {
       name: `Section ${cs.sectionNo || idx + 1}`,
       startPosition: Math.round(currentPosition * 10) / 10,
@@ -411,10 +415,7 @@ export function buildWeightImportFromSheets(
       length: lengthMm,
       casingWeight: casingShellWeight,
       casingWeightUnit: unit,
-      baseframeWeight:
-        totalCasingLengthIn > 0
-          ? Math.round(weightTable.baseframeWeightLb * lengthRatio * 10) / 10
-          : 0,
+      baseframeWeight: sectionBaseframe,
       baseframeWeightUnit: unit,
       roofWeight: 0,
       roofWeightUnit: unit,
@@ -441,7 +442,8 @@ export function buildWeightImportFromSheets(
     sections,
     components,
     totalWeights: {
-      roof: weightTable.otherComponentsLb,
+      roof: 0,
+      otherComponents: weightTable.otherComponentsLb,
       baseframe: weightTable.baseframeWeightLb,
       unit,
     },
@@ -606,7 +608,8 @@ async function finalizeWeightSheetImport(
   const sections = convertImportedSections(importData.sections || [], frameLength)
   const loads = convertImportedComponents(importData.components || [], sections, frameWidth)
 
-  const totalRoofWeight = weightTable.otherComponentsLb
+  const otherComponentsWeight = weightTable.otherComponentsLb
+  const totalRoofWeight = 0
   const totalRoofWeightUnit = weightTable.weightUnit
 
   const cogItems = buildCOGItemsFromImport(
@@ -614,7 +617,8 @@ async function finalizeWeightSheetImport(
     loads,
     frameWidth,
     totalRoofWeight,
-    totalRoofWeightUnit
+    totalRoofWeightUnit,
+    otherComponentsWeight
   )
   const cog = calculateCOG(cogItems, frameLength, frameWidth, totalRoofWeightUnit)
 
@@ -666,6 +670,7 @@ export function buildExampleImport(genioxType: number = 10): SheetImportResult {
         ],
       },
     ],
+    baseframeByCasingLengthIn: [],
     baseframeLengthIn: 152.8,
     baseframeWeightLb: 356,
     otherComponentsLb: 179,
@@ -703,7 +708,7 @@ export function buildExampleImport(genioxType: number = 10): SheetImportResult {
   const sections = convertImportedSections(importData.sections || [], frameLength)
   const loads = convertImportedComponents(importData.components || [], sections, frameWidth)
 
-  const cogItems = buildCOGItemsFromImport(sections, loads, frameWidth, 179, "lbs")
+  const cogItems = buildCOGItemsFromImport(sections, loads, frameWidth, 0, "lbs", 179)
   const cog = calculateCOG(cogItems, frameLength, frameWidth, "lbs")
 
   return {

@@ -120,7 +120,8 @@ export function buildCOGItemsFromImport(
   }>,
   frameWidth: number,
   totalRoofWeight?: number,
-  totalRoofWeightUnit?: "N" | "kg" | "lbs"
+  totalRoofWeightUnit?: "N" | "kg" | "lbs",
+  otherComponentsWeight?: number
 ): WeightMassItem[] {
   const items: WeightMassItem[] = []
 
@@ -151,6 +152,15 @@ export function buildCOGItemsFromImport(
     items.push({
       name: "Roof + Weather Hood",
       weight: totalRoofWeight,
+      weightUnit: totalRoofWeightUnit || "lbs",
+      x: frameLength / 2,
+    })
+  } else if (otherComponentsWeight && otherComponentsWeight > 0) {
+    const frameLength =
+      sections.length > 0 ? Math.max(...sections.map((s) => s.endPosition)) : 0
+    items.push({
+      name: "Other components",
+      weight: otherComponentsWeight,
       weightUnit: totalRoofWeightUnit || "lbs",
       x: frameLength / 2,
     })

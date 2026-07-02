@@ -96,9 +96,12 @@ export function WeightImportDialog({
     let finalLoads = loads
 
     if (importData.totalWeights) {
+      const sectionsAlreadyHaveBaseframe = sections.some(
+        (s) => (s.baseframeWeight || 0) > 0
+      )
       const { sections: updatedSections, loads: additionalLoads } = generateLoadsFromTotalWeights(
         importData.totalWeights.roof || 0,
-        importData.totalWeights.baseframe || 0,
+        sectionsAlreadyHaveBaseframe ? 0 : importData.totalWeights.baseframe || 0,
         effectiveFrameLength,
         effectiveFrameWidth,
         sections,
@@ -116,7 +119,8 @@ export function WeightImportDialog({
           finalLoads,
           effectiveFrameWidth,
           importData.totalWeights?.roof,
-          importData.totalWeights?.unit
+          importData.totalWeights?.unit,
+          importData.totalWeights?.otherComponents
         ),
         effectiveFrameLength,
         effectiveFrameWidth,
@@ -128,7 +132,7 @@ export function WeightImportDialog({
       loads: finalLoads,
       frameLength: effectiveFrameLength,
       frameWidth: effectiveFrameWidth,
-      totalRoofWeight: importData.totalWeights?.roof,
+      totalRoofWeight: importData.totalWeights?.roof ?? 0,
       totalRoofWeightUnit: importData.totalWeights?.unit,
       cog: computedCog,
       importJson: JSON.stringify(importData, null, 2),

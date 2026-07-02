@@ -115,7 +115,7 @@ export default function BeamLoadCalculator() {
     setDeflectionData,
   })
 
-  // Reset loads when analysis type changes
+  // Reset loads when analysis type changes (not when frame width updates after import)
   useEffect(() => {
     if (analysisType === "Simple Beam") {
       setLoads([{ type: "Point Load", magnitude: 1000, startPosition: 500, unit: "N", name: "Load 1" }])
@@ -123,7 +123,17 @@ export default function BeamLoadCalculator() {
       // For base frame, start first load at position 0
       setLoads([{ type: "Distributed Load", magnitude: 1000, startPosition: 0, loadLength: 500, loadWidth: frameWidth, unit: "N", name: "Load 1" }])
     }
-  }, [analysisType, frameWidth])
+  }, [analysisType])
+
+  // Keep distributed load width in sync with frame width without wiping imported loads
+  useEffect(() => {
+    if (analysisType !== "Base Frame") return
+    setLoads((prev) =>
+      prev.map((load) =>
+        load.type === "Distributed Load" ? { ...load, loadWidth: frameWidth } : load
+      )
+    )
+  }, [frameWidth, analysisType])
 
   const addLoad = () => {
     if (loads.length < 10) {
@@ -348,7 +358,7 @@ export default function BeamLoadCalculator() {
   // Update section roof weights when total roof weight or frame length changes
   // Only update if sections exist and we're in Base Frame mode
   useEffect(() => {
-    if (analysisType === "Base Frame" && frameLength > 0 && sections.length > 0) {
+    if (analysisType === "Base Frame" && frameLength > 0 && sections.length > 0 && totalRoofWeight > 0) {
       setSections((prevSections) => {
         return prevSections.map((section) => {
           const sectionLength = section.endPosition - section.startPosition
@@ -689,11 +699,13 @@ export default function BeamLoadCalculator() {
                     onImport={(result: WeightImportResult) => {
                       if (result.frameLength) setFrameLength(result.frameLength)
                       if (result.frameWidth) setFrameWidth(result.frameWidth)
-                      if (result.totalRoofWeight !== undefined) {
+                      if (result.totalRoofWeight !== undefined && result.totalRoofWeight > 0) {
                         setTotalRoofWeight(result.totalRoofWeight)
                         if (result.totalRoofWeightUnit) {
                           setTotalRoofWeightUnit(result.totalRoofWeightUnit)
                         }
+                      } else {
+                        setTotalRoofWeight(0)
                       }
                       setSections(result.sections)
                       setLoads(result.loads)
@@ -709,7 +721,8 @@ export default function BeamLoadCalculator() {
                               result.loads,
                               fw,
                               result.totalRoofWeight,
-                              result.totalRoofWeightUnit
+                              result.totalRoofWeightUnit,
+                              undefined
                             ),
                             fl,
                             fw,

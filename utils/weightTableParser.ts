@@ -3,8 +3,6 @@
  * Works on raw Tesseract text — does not require perfect CSV columns.
  */
 
-import type { ParsedWeightTable } from "./weightTableParser"
-
 import {
   INCH_TO_MM,
   parseLengthFromText,
@@ -16,8 +14,12 @@ export interface ParsedWeightTable {
     sectionNo: number
     casingLengthIn: number
     sectionWeightLb: number
+    /** Baseframe steel weight for this casing length (from matching Baseframe Length row) */
+    sectionBaseframeWeightLb?: number
     components: Array<{ name: string; weightLb: number }>
   }>
+  /** Baseframe rows keyed by casing length (37.0 in → 98 lb, etc.) */
+  baseframeByCasingLengthIn: Array<{ lengthIn: number; weightLb: number }>
   baseframeLengthIn: number
   baseframeWeightLb: number
   otherComponentsLb: number
@@ -72,6 +74,7 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 
   const result: ParsedWeightTable = {
     casingSections: [],
+    baseframeByCasingLengthIn: [],
     baseframeLengthIn: 0,
     baseframeWeightLb: 0,
     otherComponentsLb: 0,
@@ -81,17 +84,6 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 
   let currentSection: ParsedWeightTable["casingSections"][0] | null = null
   let currentSectionNo = 0
-
-  const baseframeRe =
-    /Baseframe\s+Length\s+(\d+(?:\.\d+)?)\s*(in|mm)?[\s\S]{0,80}?(\d+(?:\.\d+)?)\s*(?:lb)?/i
-  const baseframeMatch = text.match(baseframeRe)
-  if (baseframeMatch) {
-    const lengthText = `Baseframe Length ${baseframeMatch[1]} ${baseframeMatch[2] || "in"}`
-    const parsed = parseLengthFromText(lengthText)
-    result.baseframeLengthIn =
-      parsed?.inches ?? parseLengthFromValue(parseNum(baseframeMatch[1]), lengthText).inches
-    result.baseframeWeightLb = parseNum(baseframeMatch[3])
-  }
 
   // Full-text patterns for multi-column rows collapsed onto one line
   const casingHeaderRe =
@@ -115,7 +107,7 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
     }
   }
 
-  const otherRe = /Other\s+components[\s\S]{0,40}?(\d+(?:\.\d+)?)/i
+  const otherRe = /Other\s+components\s+(\d+(?:\.\d+)?)/i
   const otherMatch = text.match(otherRe)
   if (otherMatch) result.otherComponentsLb = parseNum(otherMatch[1])
 
@@ -170,18 +162,26 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
       continue
     }
 
-    // Baseframe line (may appear once per section — sum weights, don't use row length as total frame)
+    // Baseframe line — one row per section length (e.g. 37.0 in → 98 lb)
     if (lower.includes("baseframe") && lower.includes("length")) {
+      const parsed = parseLengthFromText(line)
+      const lengthIn = parsed?.inches ?? 0
       const nums = line.match(/\d+(?:\.\d+)?/g) || []
-      if (nums.length >= 2) result.baseframeWeightLb += parseNum(nums[nums.length - 1])
+      const weight = nums.length >= 2 ? parseNum(nums[nums.length - 1]) : 0
+      if (lengthIn > 0 && weight > 0) {
+        result.baseframeByCasingLengthIn.push({ lengthIn, weightLb: weight })
+        result.baseframeWeightLb += weight
+      }
       currentSection = null
       continue
     }
 
-    // Other components
+    // Other components (must not pick up "Weight of unit" on the same line)
     if (lower.includes("other") && lower.includes("component")) {
-      const nums = line.match(/\d+(?:\.\d+)?/g) || []
-      if (nums.length > 0) result.otherComponentsLb = parseNum(nums[nums.length - 1])
+      const weightOfUnitIdx = lower.indexOf("weight of unit")
+      const relevantLine = weightOfUnitIdx >= 0 ? line.slice(0, weightOfUnitIdx) : line
+      const otherMatch = relevantLine.match(/other\s+components\s+(\d+(?:\.\d+)?)/i)
+      if (otherMatch) result.otherComponentsLb = parseNum(otherMatch[1])
       continue
     }
 
@@ -232,7 +232,53 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
     assignComponentsByOrder(text, result)
   }
 
+  applyBaseframeWeightsToSections(result)
+  finalizeBaseframeLengthIn(result)
+
   return result
+}
+
+/** Match per-section baseframe rows (37.0 in → 98 lb) onto casing sections by length. */
+function applyBaseframeWeightsToSections(result: ParsedWeightTable): void {
+  for (const section of result.casingSections) {
+    const match = result.baseframeByCasingLengthIn.find((b) =>
+      lengthsMatch(b.lengthIn, section.casingLengthIn, 0.6)
+    )
+    if (match) {
+      section.sectionBaseframeWeightLb = match.weightLb
+    }
+  }
+
+  if (result.baseframeByCasingLengthIn.length > 0) {
+    result.baseframeWeightLb = result.baseframeByCasingLengthIn.reduce(
+      (sum, row) => sum + row.weightLb,
+      0
+    )
+  }
+}
+
+/**
+ * Total baseframe length = sum of casing sections (not a per-section baseframe row length).
+ * Per-section baseframe rows reuse casing lengths (37.0 in, 56.7 in) and must not become
+ * baseframeLengthIn — that would zero out matching casing sections in normalizeSectionLengthOrder.
+ */
+function finalizeBaseframeLengthIn(result: ParsedWeightTable): void {
+  const casingSum = result.casingSections.reduce(
+    (sum, s) => sum + (s.casingLengthIn > 0 ? s.casingLengthIn : 0),
+    0
+  )
+  if (casingSum > 0) {
+    result.baseframeLengthIn = casingSum
+    return
+  }
+
+  // Single total baseframe row (e.g. 152.8 in) — use longest baseframe length candidate
+  const totalCandidates = result.baseframeByCasingLengthIn
+    .map((b) => b.lengthIn)
+    .filter((l) => l >= 80)
+  if (totalCandidates.length === 1) {
+    result.baseframeLengthIn = totalCandidates[0]
+  }
 }
 
 /**
@@ -241,6 +287,7 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 function parseWeightTableFromNumbers(text: string, weightUnit: "lbs" | "kg"): ParsedWeightTable {
   const result: ParsedWeightTable = {
     casingSections: [],
+    baseframeByCasingLengthIn: [],
     baseframeLengthIn: 0,
     baseframeWeightLb: 0,
     otherComponentsLb: 0,
@@ -316,6 +363,8 @@ function parseWeightTableFromNumbers(text: string, weightUnit: "lbs" | "kg"): Pa
   }
 
   assignComponentsByOrder(text, result)
+  applyBaseframeWeightsToSections(result)
+  finalizeBaseframeLengthIn(result)
   return result
 }
 
@@ -569,6 +618,12 @@ export function applyCanonicalCasingLengths(
   canonical.forEach((lengthIn, idx) => {
     if (sections[idx]) {
       sections[idx].casingLengthIn = lengthIn
+      const bfMatch = table.baseframeByCasingLengthIn.find((b) =>
+        lengthsMatch(b.lengthIn, lengthIn, 0.6)
+      )
+      if (bfMatch) {
+        sections[idx].sectionBaseframeWeightLb = bfMatch.weightLb
+      }
     }
   })
 
@@ -636,6 +691,8 @@ export function mergeWeightTableWithLayout(
         sectionNo: i + 1,
         casingLengthIn: len,
         sectionWeightLb,
+        sectionBaseframeWeightLb:
+          existing?.sectionBaseframeWeightLb ?? byNo?.sectionBaseframeWeightLb,
         components: existing?.components?.length ? [...existing.components] : byNo?.components?.length ? [...byNo.components] : [],
       }
     })
