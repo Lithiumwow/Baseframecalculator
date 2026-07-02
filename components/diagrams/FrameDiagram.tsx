@@ -40,7 +40,7 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({
   }
 
   return (
-    <svg width={svgWidth} height={svgHeight} className="mx-auto" id="frame-structure-diagram">
+    <svg width={svgWidth} height={svgHeight} className="mx-auto" id="frame-structure-diagram" style={{ fontFamily: '"Noto Sans", sans-serif' }}>
       {/* Frame outline */}
       <rect
         x={frameRect.x}

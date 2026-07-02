@@ -38,7 +38,7 @@ export const CornerLoadsDiagram: React.FC<CornerLoadsDiagramProps> = ({
   }
 
   return (
-    <svg width={svgWidth} height={svgHeight} className="mx-auto" id="corner-loads-diagram">
+    <svg width={svgWidth} height={svgHeight} className="mx-auto" id="corner-loads-diagram" style={{ fontFamily: '"Noto Sans", sans-serif' }}>
       {/* Frame outline */}
       <rect
         x={frameRect.x}

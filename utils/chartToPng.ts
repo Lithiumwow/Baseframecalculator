@@ -1,3 +1,5 @@
+import { ensureNotoSansForCanvas, NOTO_SANS_FAMILY } from "./notoFonts"
+
 export interface ChartPoint {
   x: number
   y: number
@@ -49,10 +51,12 @@ function buildTicks(min: number, max: number, count = 5): number[] {
 }
 
 /** Render an area chart directly to a PNG data URL (no DOM / Recharts dependency). */
-export function renderAreaChartToPng(
+export async function renderAreaChartToPng(
   data: ChartPoint[],
   options: AreaChartRenderOptions = {},
-): string {
+): Promise<string> {
+  await ensureNotoSansForCanvas()
+  const fontFamily = NOTO_SANS_FAMILY
   const width = options.width ?? 900
   const height = options.height ?? 320
   const scale = options.scale ?? 2
@@ -75,7 +79,7 @@ export function renderAreaChartToPng(
 
   if (data.length === 0) {
     ctx.fillStyle = "#6b7280"
-    ctx.font = "14px Helvetica, Arial, sans-serif"
+    ctx.font = `14px ${fontFamily}`
     ctx.textAlign = "center"
     ctx.fillText("No diagram data available", width / 2, height / 2)
     return canvas.toDataURL("image/png", 1)
@@ -105,7 +109,7 @@ export function renderAreaChartToPng(
   ctx.strokeStyle = "#e5e7eb"
   ctx.lineWidth = 1
   ctx.fillStyle = "#374151"
-  ctx.font = "11px Helvetica, Arial, sans-serif"
+  ctx.font = `11px ${fontFamily}`
   ctx.textAlign = "right"
   ctx.textBaseline = "middle"
 
@@ -177,7 +181,7 @@ export function renderAreaChartToPng(
 
   // Axis labels
   ctx.fillStyle = "#111827"
-  ctx.font = "12px Helvetica, Arial, sans-serif"
+  ctx.font = `12px ${fontFamily}`
   if (options.xLabel) {
     ctx.textAlign = "center"
     ctx.textBaseline = "alphabetic"

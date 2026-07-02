@@ -21,7 +21,7 @@ export const BeamDiagram: React.FC<BeamDiagramProps> = ({ beamLength, leftSuppor
   const supportSize = 15
 
   return (
-    <svg width={svgWidth} height={svgHeight} className="mx-auto" id="beam-structure-diagram">
+    <svg width={svgWidth} height={svgHeight} className="mx-auto" id="beam-structure-diagram" style={{ fontFamily: '"Noto Sans", sans-serif' }}>
       {/* Beam line */}
       <line x1={margin} y1={beamY} x2={svgWidth - margin} y2={beamY} stroke="black" strokeWidth="3" />
 

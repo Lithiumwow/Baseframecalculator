@@ -1,3 +1,5 @@
+import { NOTO_SANS_FAMILY } from "./notoFonts"
+
 /** Clone and normalize an SVG element for export (PDF or PNG). */
 export function prepareSvgClone(svg: SVGSVGElement): SVGSVGElement {
   const clone = svg.cloneNode(true) as SVGSVGElement
@@ -13,6 +15,8 @@ export function prepareSvgClone(svg: SVGSVGElement): SVGSVGElement {
   clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink")
   clone.setAttribute("width", String(width))
   clone.setAttribute("height", String(height))
+  clone.setAttribute("font-family", "Noto Sans, sans-serif")
+  clone.style.fontFamily = NOTO_SANS_FAMILY
 
   if (!clone.getAttribute("viewBox")) {
     clone.setAttribute("viewBox", `0 0 ${width} ${height}`)

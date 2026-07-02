@@ -7,6 +7,7 @@ import { getLoadMagnitudeInN, getDistributedLoadTotalWeightN } from "./conversio
 import type { COGResult } from "./cogCalculation"
 import { renderAreaChartToPng } from "./chartToPng"
 import { renderDiagramSvg, renderDiagramToPng } from "./renderDiagramToPng"
+import { ensureNotoSansForCanvas, registerNotoSansPdfFonts, setPdfFont, type PdfFontStyle } from "./notoFonts"
 import { svg2pdf } from "svg2pdf.js"
 import { BeamDiagram, FrameDiagram, CornerLoadsDiagram } from "../components/diagrams"
 
@@ -50,15 +51,17 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
   } = params
 
   const pdf = new jsPDF()
+  await ensureNotoSansForCanvas()
+  await registerNotoSansPdfFonts(pdf)
   const pageWidth = pdf.internal.pageSize.getWidth()
   const pageHeight = pdf.internal.pageSize.getHeight()
   const margin = 25 // Increased margin for LaTeX style
   const contentWidth = pageWidth - 2 * margin
 
-  // LaTeX-style fonts: Times Roman for body, Helvetica for headers
-  pdf.setFont("times", "normal") // Serif font for body text
+  // Noto Sans throughout the PDF report
+  setPdfFont(pdf, "normal")
 
-  // Helper function to add wrapped text with LaTeX-style formatting
+  // Helper function to add wrapped text
   const addWrappedText = (
     text: string,
     x: number,
@@ -66,10 +69,10 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     maxWidth: number,
     lineHeight: number,
     fontSize = 10,
-    fontStyle: "normal" | "bold" | "italic" = "normal",
+    fontStyle: PdfFontStyle = "normal",
   ): number => {
     pdf.setFontSize(fontSize)
-    pdf.setFont("times", fontStyle)
+    setPdfFont(pdf, fontStyle)
     const lines = pdf.splitTextToSize(text, maxWidth)
     pdf.text(lines, x, y)
     return y + lines.length * lineHeight
@@ -84,22 +87,21 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     
     // Title text in sans-serif, bold
     pdf.setFontSize(12)
-    pdf.setFont("helvetica", "bold")
+    setPdfFont(pdf, "bold")
     pdf.setTextColor(0, 0, 0)
     pdf.text(title, x, y)
     
-    // Reset to serif for body
-    pdf.setFont("times", "normal")
+    setPdfFont(pdf, "normal")
     return y + 8
   }
 
   // LaTeX-style subsection headers
   const addSubsectionHeader = (title: string, x: number, y: number): number => {
     pdf.setFontSize(11)
-    pdf.setFont("helvetica", "bold")
+    setPdfFont(pdf, "bold")
     pdf.setTextColor(0, 0, 0)
     pdf.text(title, x, y)
-    pdf.setFont("times", "normal")
+    setPdfFont(pdf, "normal")
     return y + 6
   }
 
@@ -127,7 +129,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     pdf.line(startX + tableWidth, startY, startX + tableWidth, startY + rowHeight * (rows.length + 1))
     
     // Header row
-    pdf.setFont("helvetica", "bold")
+    setPdfFont(pdf, "bold")
     pdf.setFontSize(10)
     let currentX = startX
     headers.forEach((header, i) => {
@@ -140,7 +142,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     pdf.line(startX, startY + rowHeight, startX + tableWidth, startY + rowHeight)
     
     // Data rows
-    pdf.setFont("times", "normal")
+    setPdfFont(pdf, "normal")
     pdf.setFontSize(9)
     rows.forEach((row, rowIndex) => {
       currentX = startX
@@ -234,13 +236,13 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
   // LaTeX-style Title Page - Clean and minimal
   // Title in large serif font
   pdf.setFontSize(18)
-  pdf.setFont("times", "bold")
+  setPdfFont(pdf, "bold")
   pdf.setTextColor(0, 0, 0)
   pdf.text(analysisType === "Simple Beam" ? "Beam Analysis Report" : "Baseframe Analysis Report", pageWidth / 2, 50, { align: "center" })
   
   // Subtitle
   pdf.setFontSize(12)
-  pdf.setFont("times", "normal")
+  setPdfFont(pdf, "normal")
   pdf.setTextColor(60, 60, 60)
   pdf.text("Structural Engineering Analysis", pageWidth / 2, 65, { align: "center" })
   
@@ -251,7 +253,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
   
   // Date and time
   pdf.setFontSize(10)
-  pdf.setFont("times", "normal")
+  setPdfFont(pdf, "normal")
   pdf.setTextColor(0, 0, 0)
   const now = new Date()
   const dateStr = now.toLocaleDateString("en-US", {
@@ -266,10 +268,10 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
   
   // Information in a clean table format
   const infoY = 100
-  pdf.setFont("helvetica", "bold")
+  setPdfFont(pdf, "bold")
   pdf.setFontSize(10)
   pdf.text("Report Information", margin, infoY)
-  pdf.setFont("times", "normal")
+  setPdfFont(pdf, "normal")
   pdf.setFontSize(9)
   pdf.text(`Date: ${dateStr}`, margin, infoY + 10)
   pdf.text(`Time: ${timeStr}`, margin, infoY + 18)
@@ -325,7 +327,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
   yOffset = addSectionHeader("2. Loading Conditions", margin, yOffset)
   yOffset += 8
 
-  pdf.setFont("times", "normal")
+  setPdfFont(pdf, "normal")
   pdf.setFontSize(10)
   pdf.text(`Total Applied Load: ${results.totalAppliedLoad.toFixed(1)} N`, margin, yOffset)
   yOffset += 10
@@ -380,7 +382,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
   )
 
   if (analysisType === "Base Frame") {
-    pdf.setFont("times", "normal")
+    setPdfFont(pdf, "normal")
     pdf.setFontSize(9)
     pdf.text(`Load per Member: ${results.loadPerBeam.toFixed(1)} N (distributed equally among 4 members)`, margin, yOffset)
     yOffset += 8
@@ -583,7 +585,12 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
   yOffset = addSectionHeader("5. Force Diagrams", margin, yOffset)
   yOffset += 10
 
-  const addForceChart = (title: string, data: Array<{ x: number; y: number }>, color: string, yLabel: string) => {
+  const addForceChart = async (
+    title: string,
+    data: Array<{ x: number; y: number }>,
+    color: string,
+    yLabel: string,
+  ) => {
     yOffset = addSubsectionHeader(title, margin, yOffset)
     yOffset += 8
 
@@ -594,7 +601,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
       yOffset += 8
     }
 
-    const chartImg = renderAreaChartToPng(data, {
+    const chartImg = await renderAreaChartToPng(data, {
       width: 900,
       height: 320,
       xLabel: "Position (mm)",
@@ -604,19 +611,19 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     yOffset = embedChartImage(chartImg, yOffset, 900, 320) + 3
   }
 
-  addForceChart("5.1 Shear Force Diagram", shearForceData, "#6366f1", "Shear Force (N)")
+  await addForceChart("5.1 Shear Force Diagram", shearForceData, "#6366f1", "Shear Force (N)")
 
   if (yOffset > pageHeight - 100) {
     pdf.addPage()
     yOffset = 40
   }
-  addForceChart("5.2 Bending Moment Diagram", bendingMomentData, "#16a34a", "Bending Moment (N·m)")
+  await addForceChart("5.2 Bending Moment Diagram", bendingMomentData, "#16a34a", "Bending Moment (N·m)")
 
   if (yOffset > pageHeight - 100) {
     pdf.addPage()
     yOffset = 40
   }
-  addForceChart("5.3 Deflection Diagram", deflectionData, "#ea580c", "Deflection (mm)")
+  await addForceChart("5.3 Deflection Diagram", deflectionData, "#ea580c", "Deflection (mm)")
 
   // LaTeX-style headers and footers on all pages
   const pageCount = pdf.getNumberOfPages()
@@ -630,7 +637,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     
     // Header text
     pdf.setFontSize(8)
-    pdf.setFont("times", "normal")
+    setPdfFont(pdf, "normal")
     pdf.setTextColor(0, 0, 0)
     pdf.text("Structural Load Analysis Report", margin, 16)
     pdf.text(analysisType, pageWidth - margin, 16, { align: "right" })
@@ -642,7 +649,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     
     // Footer text
     pdf.setFontSize(8)
-    pdf.setFont("times", "italic")
+    setPdfFont(pdf, "italic")
     pdf.setTextColor(0, 0, 0)
     pdf.text(`Page ${i} of ${pageCount}`, pageWidth / 2, pageHeight - 10, { align: "center" })
     pdf.text(`Generated: ${now.toLocaleDateString()}`, pageWidth - margin, pageHeight - 10, { align: "right" })

@@ -2127,11 +2127,11 @@ export default function BeamLoadCalculator() {
                       <XAxis 
                         dataKey="x" 
                         label={{ value: "Position (mm)", position: "bottom", offset: 5, style: { textAnchor: "middle" } }}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <YAxis 
                         label={{ value: "Shear Force (N)", angle: -90, position: "left", offset: 0, style: { textAnchor: "middle" } }}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <Tooltip />
                       <Area type="monotone" dataKey="y" stroke="#8884d8" fill="#8884d8" />
@@ -2164,11 +2164,11 @@ export default function BeamLoadCalculator() {
                       <XAxis 
                         dataKey="x" 
                         label={{ value: "Position (mm)", position: "bottom", offset: 5, style: { textAnchor: "middle" } }}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <YAxis 
                         label={{ value: "Bending Moment (N·m)", angle: -90, position: "left", offset: 0, style: { textAnchor: "middle" } }}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <Tooltip />
                       <Area type="monotone" dataKey="y" stroke="#82ca9d" fill="#82ca9d" />
@@ -2201,11 +2201,11 @@ export default function BeamLoadCalculator() {
                       <XAxis 
                         dataKey="x" 
                         label={{ value: "Position (mm)", position: "bottom", offset: 5, style: { textAnchor: "middle" } }}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <YAxis 
                         label={{ value: "Deflection (mm)", angle: -90, position: "left", offset: 0, style: { textAnchor: "middle" } }}
-                        tick={{ fontSize: 10 }}
+                        tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <Tooltip />
                       <Area type="monotone" dataKey="y" stroke="#ff7300" fill="#ff7300" />

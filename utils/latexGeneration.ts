@@ -69,6 +69,7 @@ export function generateLaTeX(params: LaTeXGenerationParams): string {
 
   let latex = `\\documentclass[11pt,a4paper]{article}
 \\usepackage[utf8]{inputenc}
+\\usepackage[sfdefault]{noto}
 \\usepackage[T1]{fontenc}
 \\usepackage{geometry}
 \\usepackage{booktabs}

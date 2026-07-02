@@ -1,9 +1,11 @@
 import type React from "react"
 import { createRoot } from "react-dom/client"
 import { flushSync } from "react-dom"
+import { ensureNotoSansForCanvas } from "./notoFonts"
 import { prepareSvgClone, svgToPngDataUrl } from "./svgToPng"
 
 async function mountDiagram(element: React.ReactElement): Promise<SVGSVGElement> {
+  await ensureNotoSansForCanvas()
   const container = document.createElement("div")
   container.setAttribute("data-pdf-diagram-root", "true")
   container.style.position = "fixed"
