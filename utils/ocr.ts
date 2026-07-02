@@ -160,7 +160,7 @@ function isHeaderRow(cols: string[]): boolean {
 
 function isSummaryRow(cols: string[]): boolean {
   const text = cols.join(" ").toLowerCase()
-  return text.includes("weight of unit")
+  return text.includes("weight of unit") || text.includes("other components")
 }
 
 function cleanNumeric(value: string): string {
@@ -207,13 +207,24 @@ export function buildWeightTableCSV(
   return csvRows.join("\n")
 }
 
+function normalizeOcrTableLine(line: string): string {
+  return line
+    .replace(/[|]/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/Pre\s+-?\s*heater/gi, "Pre-heater")
+    .replace(/Basframe/gi, "Baseframe")
+    .replace(/Lenght/gi, "Length")
+    .replace(/Weigth/gi, "Weight")
+    .trim()
+}
+
 /**
  * Regex fallback when bounding-box column detection is unreliable.
  */
 export function parseWeightTableFromText(rawText: string): string {
   const lines = rawText
     .split("\n")
-    .map((l) => l.trim())
+    .map((l) => normalizeOcrTableLine(l))
     .filter((l) => l.length > 0)
 
   const weightUnit: "kg" | "lbs" = rawText.toLowerCase().includes("lb") ? "lbs" : "kg"
@@ -225,13 +236,33 @@ export function parseWeightTableFromText(rawText: string): string {
 
   const sectionHeaderRe =
     /^(?:(\d+)\s+)?((?:Casing|Baseframe)\s+Length\s+[\d.]+\s*(?:in|mm)(?:\s*ch(?:es)?)?)\s*(\d+(?:\.\d+)?)?/i
-  const componentRe = /^([A-Za-z][A-Za-z\s-]+?)\s+(\d+(?:\.\d+)?)\s*$/i
+  const componentRe = /^([A-Za-z][A-Za-z0-9\s./_-]*?)\s+(\d+(?:\.\d+)?)\s*$/i
   const otherComponentsRe = /^Other\s+components\s+(\d+(?:\.\d+)?)/i
+  const weightOfUnitRe = /^Weight\s+of\s+unit\s+(\d+(?:\.\d+)?)/i
 
   for (const line of lines) {
     const lower = line.toLowerCase()
     if (lower.includes("section no") || lower.includes("function code")) continue
-    if (lower.includes("weight of unit")) continue
+    if (lower.includes("weight of function") && lower.includes("weight of section")) continue
+
+    // Full CSV-style row from column OCR: "1, Casing Length 37.0 in, , , 357"
+    if (line.includes(",")) {
+      const parts = line.split(",").map((p) => p.trim())
+      if (parts.length >= 2) {
+        const sectionNo = (parts[0] || currentSectionNo).replace(/[^\d]/g, "")
+        if (sectionNo) currentSectionNo = sectionNo
+        csvRows.push(
+          [
+            currentSectionNo,
+            parts[1] || "",
+            parts[2] || "",
+            cleanNumeric(parts[3] || ""),
+            cleanNumeric(parts[4] || parts[3] || ""),
+          ].join(", ")
+        )
+        continue
+      }
+    }
 
     const sectionMatch = line.match(sectionHeaderRe)
     if (sectionMatch) {
@@ -252,6 +283,14 @@ export function parseWeightTableFromText(rawText: string): string {
     if (otherMatch) {
       csvRows.push(
         [currentSectionNo, "Other components", "", "", otherMatch[1]].join(", ")
+      )
+      continue
+    }
+
+    const unitMatch = line.match(weightOfUnitRe)
+    if (unitMatch) {
+      csvRows.push(
+        [currentSectionNo, "Weight of unit", "", "", unitMatch[1]].join(", ")
       )
       continue
     }
@@ -296,7 +335,7 @@ function rowsFromBoundingBoxes(words: OCRWord[]): { dataRows: string[][]; weight
 
   for (const row of wordRows) {
     const cols = rowToColumns(row, boundaries)
-    if (isHeaderRow(cols) || isSummaryRow(cols)) continue
+    if (isHeaderRow(cols)) continue
     if (cols.every((c) => !c)) continue
     dataRows.push(cols)
   }
@@ -391,19 +430,37 @@ export async function processWeightTableImage(
   })
 
   // Prefer line-joined text for table parsing when available
-  const ocrBlob = lineTexts.length > 2 ? lineTexts.join("\n") : rawText
+  const ocrBlob = [rawText, ...lineTexts].filter(Boolean).join("\n")
 
-  let dataRows = rowsFromBoundingBoxes(words)
-  let formattedTable: string
+  const bboxResult = rowsFromBoundingBoxes(words)
+  const regexCsv = parseWeightTableFromText(ocrBlob)
+  const bboxCsv =
+    bboxResult.dataRows.length >= 2
+      ? buildWeightTableCSV(bboxResult.dataRows, bboxResult.weightUnit)
+      : ""
 
-  if (dataRows.dataRows.length >= 2) {
-    formattedTable = buildWeightTableCSV(dataRows.dataRows, dataRows.weightUnit)
-  } else {
-    formattedTable = parseWeightTableFromText(ocrBlob)
+  // Pick CSV with more data rows (richest OCR structure wins)
+  const pickCsv = (a: string, b: string) => {
+    const score = (csv: string) => {
+      const rows = csv.split("\n").filter((l) => l.trim())
+      let s = rows.length
+      for (const row of rows) {
+        if (/casing length|baseframe length/i.test(row)) s += 5
+        if (/filter|fan|pre-heater|casing/i.test(row)) s += 3
+        if (/\d{2,}/.test(row)) s += 2
+      }
+      return s
+    }
+    return score(b) > score(a) ? b : a
+  }
+
+  let formattedTable = bboxCsv || regexCsv
+  if (bboxCsv && regexCsv) {
+    formattedTable = pickCsv(bboxCsv, regexCsv)
   }
 
   if (formattedTable.split("\n").length < 3) {
-    formattedTable = parseWeightTableFromText(ocrBlob)
+    formattedTable = regexCsv || bboxCsv
   }
 
   // Don't call parseWeightImportTable here — sheet import uses weightTableParser instead

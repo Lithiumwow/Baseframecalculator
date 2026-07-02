@@ -61,7 +61,7 @@ export function parseWeightTableFromRawText(rawText: string): ParsedWeightTable 
 
   let result = parseWeightTableLines(text, weightUnit)
 
-  if (isEmptyWeightTable(result)) {
+  if (!hasMeaningfulWeightData(result) && result.casingSections.length === 0) {
     result = parseWeightTableFromNumbers(text, weightUnit)
   }
 
@@ -372,7 +372,7 @@ function parseWeightTableFromNumbers(text: string, weightUnit: "lbs" | "kg"): Pa
 function assignComponentsByOrder(text: string, result: ParsedWeightTable) {
   const knownComponents = [
     "Casing", "Damper", "Filter", "Inspection section", "Special function",
-    "Cooling coil", "Heating coil", "Control system", "Fan",
+    "Cooling coil", "Heating coil", "Control system", "Fan", "Pre-heater", "Preheater",
   ]
 
   const found: Array<{ name: string; weight: number }> = []
@@ -438,11 +438,70 @@ function assignComponentsByOrder(text: string, result: ParsedWeightTable) {
 }
 
 export function isEmptyWeightTable(table: ParsedWeightTable): boolean {
-  return (
-    table.casingSections.length === 0 &&
-    table.baseframeWeightLb === 0 &&
-    table.otherComponentsLb === 0
-  )
+  return !hasMeaningfulWeightData(table)
+}
+
+/** True when OCR/parser extracted at least one weight value (not just section lengths). */
+export function hasMeaningfulWeightData(table: ParsedWeightTable): boolean {
+  if (table.baseframeWeightLb > 0 || table.otherComponentsLb > 0 || table.unitTotalLb > 0) {
+    return true
+  }
+  if (table.baseframeByCasingLengthIn.some((b) => b.weightLb > 0)) {
+    return true
+  }
+  for (const section of table.casingSections) {
+    if (section.sectionWeightLb > 0) return true
+    if ((section.sectionBaseframeWeightLb ?? 0) > 0) return true
+    if (section.components.some((c) => c.weightLb > 0)) return true
+  }
+  return false
+}
+
+/** Score parsed tables so OCR can pick the richest result among fallbacks. */
+export function weightTableDataScore(table: ParsedWeightTable): number {
+  let score = 0
+  score += table.baseframeWeightLb * 2
+  score += table.otherComponentsLb * 2
+  score += table.unitTotalLb
+  score += table.baseframeByCasingLengthIn.reduce((s, b) => s + b.weightLb, 0) * 2
+  for (const section of table.casingSections) {
+    score += section.sectionWeightLb
+    score += (section.sectionBaseframeWeightLb ?? 0) * 2
+    score += section.components.reduce((s, c) => s + c.weightLb, 0) * 3
+    score += section.components.length * 5
+  }
+  return score
+}
+
+export function pickBestWeightTable(tables: ParsedWeightTable[]): ParsedWeightTable {
+  if (tables.length === 0) {
+    return {
+      casingSections: [],
+      baseframeByCasingLengthIn: [],
+      baseframeLengthIn: 0,
+      baseframeWeightLb: 0,
+      otherComponentsLb: 0,
+      unitTotalLb: 0,
+      weightUnit: "lbs",
+    }
+  }
+  return [...tables].sort((a, b) => weightTableDataScore(b) - weightTableDataScore(a))[0]
+}
+
+/** Run post-parse steps (baseframe matching, total length) on any parser output. */
+export function completeWeightTableParse(table: ParsedWeightTable): ParsedWeightTable {
+  const result: ParsedWeightTable = {
+    ...table,
+    casingSections: table.casingSections.map((s) => ({
+      ...s,
+      components: [...s.components],
+    })),
+    baseframeByCasingLengthIn: [...table.baseframeByCasingLengthIn],
+  }
+  applyBaseframeWeightsToSections(result)
+  finalizeBaseframeLengthIn(result)
+  result.casingSections.sort((a, b) => a.sectionNo - b.sectionNo)
+  return result
 }
 
 /** Detect Systemair weight table pasted as plain text (space or tab separated). */

@@ -18,6 +18,9 @@ import {
   applyCanonicalCasingLengths,
   getCanonicalCasingLengthsIn,
   isValidCasingSectionLength,
+  pickBestWeightTable,
+  completeWeightTableParse,
+  hasMeaningfulWeightData,
 } from "./weightTableParser"
 import { processWeightTableImage } from "./ocr"
 import { processLayoutImage } from "./layoutOcr"
@@ -158,6 +161,7 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
   }
 
   const casingSections: ParsedWeightTable["casingSections"] = []
+  const baseframeByCasingLengthIn: ParsedWeightTable["baseframeByCasingLengthIn"] = []
   let baseframeLengthIn = 0
   let baseframeWeightLb = 0
   let otherComponentsLb = 0
@@ -165,9 +169,13 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
 
   let currentCasing: ParsedWeightTable["casingSections"][0] | null = null
 
+  const rowWeight = (row: ParsedWeightRow) =>
+    row.sectionWeight > 0 ? row.sectionWeight : row.functionWeight
+
   for (const row of rows) {
     const code = row.sectionCode.toLowerCase()
     const func = row.functionCode.toLowerCase()
+    const combined = `${row.sectionCode} ${row.functionCode}`.toLowerCase()
 
     if (code.includes("casing length")) {
       const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
@@ -187,17 +195,27 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
       currentCasing = {
         sectionNo: row.sectionNo,
         casingLengthIn: lengthIn,
-        sectionWeightLb: row.sectionWeight,
+        sectionWeightLb: rowWeight(row),
         components: [],
       }
       casingSections.push(currentCasing)
     } else if (code.includes("baseframe length")) {
-      baseframeWeightLb += row.sectionWeight
+      const lengthMatch = row.sectionCode.match(/(\d+(?:\.\d+)?)\s*(?:in|mm)/i)
+      let lengthIn = 0
+      if (lengthMatch) {
+        const parsed = parseLengthFromText(lengthMatch[0])
+        lengthIn = parsed?.inches ?? 0
+      }
+      const weight = rowWeight(row)
+      if (lengthIn > 0 && weight > 0) {
+        baseframeByCasingLengthIn.push({ lengthIn, weightLb: weight })
+      }
+      baseframeWeightLb += weight
       currentCasing = null
     } else if (code.includes("other components")) {
-      otherComponentsLb = row.sectionWeight
-    } else if (func.includes("weight of unit")) {
-      unitTotalLb = row.sectionWeight
+      otherComponentsLb = rowWeight(row)
+    } else if (combined.includes("weight of unit")) {
+      unitTotalLb = rowWeight(row)
     } else if (
       row.functionCode &&
       (row.functionWeight > 0 ||
@@ -212,15 +230,15 @@ export function parseWeightTableStructured(tableCsv: string): ParsedWeightTable 
     }
   }
 
-  return {
+  return completeWeightTableParse({
     casingSections,
-    baseframeByCasingLengthIn: [],
+    baseframeByCasingLengthIn,
     baseframeLengthIn,
     baseframeWeightLb,
     otherComponentsLb,
     unitTotalLb,
     weightUnit,
-  }
+  })
 }
 
 /**
@@ -544,15 +562,15 @@ export async function processWeightSheets(
 
   onProgress?.("Building import data...", 92)
 
-  let weightTable = parsePastedWeightTable(rawText)
-  if (isEmptyWeightTable(weightTable)) {
-    weightTable = parseWeightTableStructured(formattedTable)
-  }
-  if (isEmptyWeightTable(weightTable)) {
-    weightTable = parsePastedWeightTable(formattedTable)
-  }
+  const combinedText = [rawText, formattedTable].filter(Boolean).join("\n")
+  const weightTable = pickBestWeightTable([
+    completeWeightTableParse(parsePastedWeightTable(rawText)),
+    parseWeightTableStructured(formattedTable),
+    completeWeightTableParse(parsePastedWeightTable(formattedTable)),
+    completeWeightTableParse(parsePastedWeightTable(combinedText)),
+  ])
 
-  return finalizeWeightSheetImport(weightTable, layout, genioxType, rawText, onProgress)
+  return finalizeWeightSheetImport(weightTable, layout, genioxType, combinedText || rawText, onProgress)
 }
 
 async function finalizeWeightSheetImport(
@@ -591,11 +609,12 @@ async function finalizeWeightSheetImport(
     weightTable.baseframeLengthIn = casingSumIn
   }
 
-  if (isEmptyWeightTable(weightTable)) {
+  if (!hasMeaningfulWeightData(weightTable)) {
     throw new Error(
-      "Could not extract weight data from the weights table image. " +
-        "Try a clearer screenshot, or paste the generated JSON manually after editing.\n\n" +
-        "OCR raw text preview:\n" + rawText.substring(0, 500)
+      "Could not extract weight values from the weights table image. " +
+        "The layout was read, but OCR missed the weight numbers.\n\n" +
+        "Try pasting the weight table text instead (recommended), or use a clearer screenshot.\n\n" +
+        "OCR preview:\n" + rawText.substring(0, 800)
     )
   }
 
