@@ -29,17 +29,10 @@ import type { Section, Load } from "../types"
 import { convertImportedSections, convertImportedComponents } from "./weightImport"
 import {
   splitSegmentsByCasingSections,
-  matchComponentsToSegments,
-  inferKindFromWeightName,
-  layoutTypeLabel,
   syntheticSegmentsFromComponents,
   weightTableComponentsForLoads,
-  type WeightComponentKind,
+  sequentialLoadPlacementsInSection,
 } from "./layoutSymbols"
-import {
-  defaultLengthInForKind,
-  segmentInchesToMm,
-} from "./layoutSegmentDefaults"
 import {
   assignDualDeckBayLoads,
   looksLikeDualDeckWeightTable,
@@ -312,60 +305,25 @@ function assignComponentLoads(
       continue
     }
 
-    const assignments = matchComponentsToSegments(
-      sectionSegments,
+    const placements = sequentialLoadPlacementsInSection(
       sectionComponents,
+      sectionSegments,
+      sectionLengthIn,
       sectionLengthMm,
       inchesToMm
     )
 
-    let fallbackPosMm = 0
-    let fallbackSegIdx = 0
-
-    sectionComponents.forEach((comp, compIdx) => {
-      const assignment = assignments.get(compIdx)
-      const kind = inferKindFromWeightName(comp.name)
-
-      let loadLengthMm: number
-      let positionMm: number
-      let displayName = comp.name
-
-      if (kind === "casing") {
-        loadLengthMm = sectionLengthMm
-        positionMm = 0
-      } else       if (assignment && assignment.segmentIndex >= 0) {
-        loadLengthMm = segmentInchesToMm(assignment.segment.lengthIn)
-        positionMm = assignment.positionInSectionMm
-        const stacked = assignment.segment.stackedTypes?.filter((t) => t !== "unknown") ?? []
-        if (stacked.length > 1) {
-          displayName = `${comp.name} (${stacked.map(layoutTypeLabel).join(" + ")})`
-        } else if (assignment.segment.type !== "unknown") {
-          displayName = `${comp.name} (${layoutTypeLabel(assignment.segment.type)})`
-        }
-      } else if (fallbackSegIdx < sectionSegments.length) {
-        loadLengthMm = segmentInchesToMm(sectionSegments[fallbackSegIdx].lengthIn)
-        positionMm = fallbackPosMm
-        fallbackPosMm += loadLengthMm
-        fallbackSegIdx++
-      } else {
-        const defaultIn = defaultLengthInForKind(kind)
-        loadLengthMm = segmentInchesToMm(defaultIn)
-        positionMm = fallbackPosMm
-        fallbackPosMm += loadLengthMm
-      }
-
-      if (positionMm + loadLengthMm > sectionLengthMm + 1) {
-        loadLengthMm = Math.max(sectionLengthMm - positionMm, segmentInchesToMm(2))
-      }
-
+    placements.forEach((placement, compIdx) => {
+      const comp = sectionComponents[compIdx]
+      if (!comp) return
       components.push({
-        name: displayName,
+        name: placement.displayName,
         sectionIndex: sectionIdx,
-        position: positionMm,
+        position: placement.positionMm,
         weight: comp.weightLb,
         weightUnit,
         loadType: "Distributed Load",
-        loadLength: Math.round(loadLengthMm),
+        loadLength: Math.round(placement.loadLengthMm),
         loadWidth: frameWidthMm,
       })
     })

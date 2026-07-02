@@ -315,3 +315,62 @@ export function syntheticSegmentsFromComponents(
     }
   })
 }
+
+export interface SequentialLoadPlacement {
+  positionMm: number
+  loadLengthMm: number
+  displayName: string
+}
+
+/**
+ * Place components back-to-back within a section: 0, L0, L0+L1, …
+ * Lengths come from layout segments when count matches; otherwise synthetic bays.
+ */
+export function sequentialLoadPlacementsInSection(
+  sectionComponents: Array<{ name: string; weightLb: number }>,
+  sectionSegments: LayoutSegment[],
+  sectionLengthIn: number,
+  sectionLengthMm: number,
+  inchesToMmFn: (inches: number) => number
+): SequentialLoadPlacement[] {
+  const n = sectionComponents.length
+  if (n === 0 || sectionLengthMm <= 0) return []
+
+  const segments =
+    sectionSegments.length >= n
+      ? sectionSegments.slice(0, n)
+      : syntheticSegmentsFromComponents(
+          sectionComponents,
+          sectionLengthIn > 0 ? sectionLengthIn : sectionLengthMm / 25.4
+        )
+
+  let cursorMm = 0
+  const placements: SequentialLoadPlacement[] = []
+
+  for (let i = 0; i < n; i++) {
+    const comp = sectionComponents[i]
+    const seg = segments[i] ?? segments[segments.length - 1]
+
+    let loadLengthMm =
+      i === n - 1
+        ? Math.round((sectionLengthMm - cursorMm) * 10) / 10
+        : Math.round(inchesToMmFn(seg.lengthIn) * 10) / 10
+
+    loadLengthMm = Math.max(1, Math.min(loadLengthMm, sectionLengthMm - cursorMm))
+    if (loadLengthMm <= 0) break
+
+    let displayName = comp.name
+    if (seg.type !== "unknown") {
+      displayName = `${comp.name} (${layoutTypeLabel(seg.type)})`
+    }
+
+    placements.push({
+      positionMm: cursorMm,
+      loadLengthMm,
+      displayName,
+    })
+    cursorMm = Math.round((cursorMm + loadLengthMm) * 10) / 10
+  }
+
+  return placements
+}
