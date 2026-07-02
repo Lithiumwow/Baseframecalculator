@@ -44,6 +44,7 @@ import {
   auditParsedWeightTable,
   auditAppWeights,
   mergeWeightAudits,
+  layoutBaySumMatchesTable,
 } from "./weightAudit"
 
 export interface ParsedWeightRow {
@@ -282,6 +283,7 @@ function assignComponentLoads(
 
   const useFullFrameMmLayout =
     hasRealLayout &&
+    layoutBaySumMatchesTable(allLayoutSegments, casingLengthsIn) &&
     isSideViewMmLayout(allLayoutSegments) &&
     orderedSections.length >= 1
 
@@ -314,7 +316,10 @@ function assignComponentLoads(
     return mergeInletBayLoads(components)
   }
 
-  const sectionSegmentGroups = hasRealLayout
+  const trustLayout =
+    hasRealLayout && layoutBaySumMatchesTable(allLayoutSegments, casingLengthsIn)
+
+  const sectionSegmentGroups = trustLayout
     ? splitSegmentsByCasingSections(
         layout.layoutOrientation === "horizontal" && layout.componentSegments?.length > 0
           ? layout.componentSegments
@@ -353,7 +358,7 @@ function assignComponentLoads(
       continue
     }
 
-    const placements = hasRealLayout && sectionSegments.length > 0
+    const placements = trustLayout && sectionSegments.length > 0
       ? layoutDrivenLoadPlacementsInSection(
           sectionComponents,
           sectionSegments,
@@ -424,8 +429,13 @@ export function buildWeightImportFromSheets(
     layout.baseframeLengthMm ||
     inchesToMm(weightTable.baseframeLengthIn)
 
+  const layoutMatchesTable =
+    layoutBaySumMm > 0 &&
+    casingTotalMm > 0 &&
+    Math.abs(layoutBaySumMm - casingTotalMm) / casingTotalMm <= 0.05
+
   const frameLengthMm =
-    layoutBaySumMm > casingTotalMm * 1.02
+    layoutMatchesTable && layoutBaySumMm > casingTotalMm * 1.02
       ? Math.round(layoutBaySumMm)
       : casingTotalMm > 0
         ? Math.round(casingTotalMm)
@@ -433,7 +443,7 @@ export function buildWeightImportFromSheets(
           weightTable.casingSections.reduce((s, c) => s + inchesToMm(c.casingLengthIn), 0)
 
   const sectionLengthScale =
-    casingTotalMm > 0 && layoutBaySumMm > casingTotalMm * 1.02
+    layoutMatchesTable && layoutBaySumMm > casingTotalMm * 1.02
       ? layoutBaySumMm / casingTotalMm
       : 1
 
@@ -677,8 +687,8 @@ async function finalizeWeightSheetImport(
 
   const tableAudit = auditParsedWeightTable(weightTable)
   const appAudit = auditAppWeights(sections, loads, {
-    unitTotalLb: weightTable.unitTotalLb,
-    otherComponentsLb: otherComponentsWeight,
+    unitTotal: weightTable.unitTotalLb,
+    otherComponents: otherComponentsWeight,
     totalRoofWeight,
     totalRoofWeightUnit,
     weightUnit: weightTable.weightUnit,
@@ -779,8 +789,8 @@ export function buildExampleImport(genioxType: number = 10): SheetImportResult {
 
   const tableAudit = auditParsedWeightTable(weightTable)
   const appAudit = auditAppWeights(sections, loads, {
-    unitTotalLb: weightTable.unitTotalLb,
-    otherComponentsLb: weightTable.otherComponentsLb,
+    unitTotal: weightTable.unitTotalLb,
+    otherComponents: weightTable.otherComponentsLb,
     totalRoofWeight: 0,
     totalRoofWeightUnit: "lbs",
     weightUnit: "lbs",

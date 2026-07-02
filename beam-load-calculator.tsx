@@ -93,6 +93,7 @@ export default function BeamLoadCalculator() {
   const [unitTotalLb, setUnitTotalLb] = useState(0)
   const [otherComponentsWeight, setOtherComponentsWeight] = useState(0)
   const [otherComponentsWeightUnit, setOtherComponentsWeightUnit] = useState<"N" | "kg" | "lbs">("lbs")
+  const [weightTableUnit, setWeightTableUnit] = useState<"kg" | "lbs">("lbs")
   const [weightAudit, setWeightAudit] = useState<WeightAuditBreakdown | null>(null)
   const [importJson, setImportJson] = useState("")
 
@@ -143,6 +144,7 @@ export default function BeamLoadCalculator() {
     setUnitTotalLb(0)
     setOtherComponentsWeight(0)
     setOtherComponentsWeightUnit("lbs")
+    setWeightTableUnit("lbs")
     setWeightAudit(null)
     setImportJson("")
     setLoads(
@@ -182,9 +184,12 @@ export default function BeamLoadCalculator() {
     if (result.unitTotalLb !== undefined) setUnitTotalLb(result.unitTotalLb)
     if (result.otherComponentsLb !== undefined) {
       setOtherComponentsWeight(result.otherComponentsLb)
-      setOtherComponentsWeightUnit(result.totalRoofWeightUnit || "lbs")
+      setOtherComponentsWeightUnit(result.weightAudit?.weightUnit || "lbs")
     }
-    if (result.weightAudit) setWeightAudit(result.weightAudit)
+    if (result.weightAudit) {
+      setWeightAudit(result.weightAudit)
+      setWeightTableUnit(result.weightAudit.weightUnit)
+    }
     if (result.importJson) setImportJson(result.importJson)
     if (result.cog) {
       setCogResult(result.cog)
@@ -220,7 +225,10 @@ export default function BeamLoadCalculator() {
       "Force diagrams use equivalent uniform load; corner reactions use position-aware area method.",
     ]
     if (unitTotalLb > 0 && weightAudit && !weightAudit.balanced) {
-      notes.push(`Weight mismatch: calculator ${weightAudit.appComputedLb.toFixed(1)} lb vs unit total ${unitTotalLb} lb.`)
+      const u = weightAudit.weightUnit === "kg" ? "kg" : "lb"
+      notes.push(
+        `Weight mismatch: calculator ${weightAudit.appComputedTotal.toFixed(1)} ${u} vs unit total ${unitTotalLb} ${u}.`
+      )
     }
     if (results.totalAppliedLoad > 0) {
       const pct = Math.abs(reactionSum - results.totalAppliedLoad) / results.totalAppliedLoad
@@ -631,11 +639,11 @@ export default function BeamLoadCalculator() {
   useEffect(() => {
     if (unitTotalLb <= 0 && sections.length === 0) return
     const appAudit = auditAppWeights(sections, loads, {
-      unitTotalLb,
-      otherComponentsLb: otherComponentsWeight,
+      unitTotal: unitTotalLb,
+      otherComponents: otherComponentsWeight,
       totalRoofWeight,
       totalRoofWeightUnit,
-      weightUnit: otherComponentsWeightUnit,
+      weightUnit: weightTableUnit,
     })
     setWeightAudit((prev) => (prev ? mergeWeightAudits(prev, appAudit) : appAudit))
   }, [
@@ -643,7 +651,7 @@ export default function BeamLoadCalculator() {
     loads,
     unitTotalLb,
     otherComponentsWeight,
-    otherComponentsWeightUnit,
+    weightTableUnit,
     totalRoofWeight,
     totalRoofWeightUnit,
   ])
@@ -1756,27 +1764,39 @@ export default function BeamLoadCalculator() {
                   )}
                   <div className="text-sm">
                     <p className="font-semibold text-gray-900">
-                      Weight of unit: {unitTotalLb} lb
+                      Weight of unit: {unitTotalLb}{" "}
+                      {weightAudit.weightUnit === "kg" ? "kg" : "lb"}
                       {weightAudit.balanced ? " — balanced" : " — mismatch"}
                     </p>
                     <p className="text-gray-700 mt-1">
-                      Calculator total: <strong>{weightAudit.appComputedLb.toFixed(1)} lb</strong>
-                      {weightAudit.tableComputedLb > 0 && (
+                      Calculator total:{" "}
+                      <strong>
+                        {weightAudit.appComputedTotal.toFixed(1)}{" "}
+                        {weightAudit.weightUnit === "kg" ? "kg" : "lb"}
+                      </strong>
+                      {weightAudit.tableComputedTotal > 0 && (
                         <>
                           {" "}
-                          | Parsed table: <strong>{weightAudit.tableComputedLb.toFixed(1)} lb</strong>
+                          | Parsed table:{" "}
+                          <strong>
+                            {weightAudit.tableComputedTotal.toFixed(1)}{" "}
+                            {weightAudit.weightUnit === "kg" ? "kg" : "lb"}
+                          </strong>
                         </>
                       )}
                       {" "}
-                      | Δ {weightAudit.deltaLb > 0 ? "+" : ""}
-                      {weightAudit.deltaLb.toFixed(1)} lb
+                      | Δ {weightAudit.delta > 0 ? "+" : ""}
+                      {weightAudit.delta.toFixed(1)}{" "}
+                      {weightAudit.weightUnit === "kg" ? "kg" : "lb"}
                     </p>
                     <p className="text-xs text-gray-600 mt-1">
-                      Components {weightAudit.appComponentLoadsLb.toFixed(0)} + Casing{" "}
-                      {weightAudit.appCasingLb.toFixed(0)} + Baseframe{" "}
-                      {weightAudit.appBaseframeLb.toFixed(0)} + Other{" "}
-                      {weightAudit.appOtherLb.toFixed(0)} lb
-                      {weightAudit.appRoofLb > 0 && ` + Roof ${weightAudit.appRoofLb.toFixed(0)}`}
+                      Components {weightAudit.appComponentLoadsTotal.toFixed(0)} + Casing{" "}
+                      {weightAudit.appCasingTotal.toFixed(0)} + Baseframe{" "}
+                      {weightAudit.appBaseframeTotal.toFixed(0)} + Other{" "}
+                      {weightAudit.appOtherTotal.toFixed(0)}{" "}
+                      {weightAudit.weightUnit === "kg" ? "kg" : "lb"}
+                      {weightAudit.appRoofTotal > 0 &&
+                        ` + Roof ${weightAudit.appRoofTotal.toFixed(0)}`}
                     </p>
                     {weightAudit.warnings.map((w) => (
                       <p key={w} className="text-xs text-amber-800 mt-1">

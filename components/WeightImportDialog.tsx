@@ -584,14 +584,18 @@ Weight of unit 1134`
                       }`}
                     >
                       <div className="font-semibold">
-                        Weight of unit: {preview.unitTotalLb} lb
+                        Weight of unit: {preview.unitTotalLb}{" "}
+                        {preview.weightAudit.weightUnit === "kg" ? "kg" : "lb"}
                         {preview.weightAudit.balanced ? " ✓ balanced" : " — check totals"}
                       </div>
                       <div>
-                        Parsed: {preview.weightAudit.tableComputedLb.toFixed(1)} lb | App:{" "}
-                        {preview.weightAudit.appComputedLb.toFixed(1)} lb | Δ{" "}
-                        {preview.weightAudit.deltaLb > 0 ? "+" : ""}
-                        {preview.weightAudit.deltaLb.toFixed(1)} lb
+                        Parsed: {preview.weightAudit.tableComputedTotal.toFixed(1)}{" "}
+                        {preview.weightAudit.weightUnit === "kg" ? "kg" : "lb"} | App:{" "}
+                        {preview.weightAudit.appComputedTotal.toFixed(1)}{" "}
+                        {preview.weightAudit.weightUnit === "kg" ? "kg" : "lb"} | Δ{" "}
+                        {preview.weightAudit.delta > 0 ? "+" : ""}
+                        {preview.weightAudit.delta.toFixed(1)}{" "}
+                        {preview.weightAudit.weightUnit === "kg" ? "kg" : "lb"}
                       </div>
                       {preview.weightAudit.warnings.map((w) => (
                         <div key={w} className="text-amber-800 mt-1">

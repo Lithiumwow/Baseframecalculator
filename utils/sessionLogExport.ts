@@ -72,6 +72,7 @@ export function downloadSessionLog(log: SessionLogPayload, filename?: string): v
 }
 
 export function sessionLogSummary(log: SessionLogPayload): string {
+  const wu = log.weightAudit?.weightUnit === "kg" ? "kg" : "lb"
   const lines = [
     `# Baseframe Calculator Session Log`,
     `Exported: ${log.exportedAt}`,
@@ -80,7 +81,7 @@ export function sessionLogSummary(log: SessionLogPayload): string {
     `- Analysis: ${log.inputs.analysisType}`,
     `- Geniox: ${log.inputs.genioxType}`,
     `- Frame: ${log.inputs.frameLengthMm} × ${log.inputs.frameWidthMm} mm`,
-    `- Weight of unit (table): ${log.inputs.unitTotalLb} lb`,
+    `- Weight of unit (table): ${log.inputs.unitTotalLb} ${wu}`,
     ``,
   ]
 
@@ -88,10 +89,10 @@ export function sessionLogSummary(log: SessionLogPayload): string {
     const a = log.weightAudit
     lines.push(
       `## Weight balance`,
-      `- Table computed: ${a.tableComputedLb.toFixed(1)} lb`,
-      `- App computed: ${a.appComputedLb.toFixed(1)} lb`,
-      `- Unit total: ${a.unitTotalLb} lb`,
-      `- Delta: ${a.deltaLb > 0 ? "+" : ""}${a.deltaLb.toFixed(1)} lb`,
+      `- Table computed: ${a.tableComputedTotal.toFixed(1)} ${wu}`,
+      `- App computed: ${a.appComputedTotal.toFixed(1)} ${wu}`,
+      `- Unit total: ${a.unitTotal} ${wu}`,
+      `- Delta: ${a.delta > 0 ? "+" : ""}${a.delta.toFixed(1)} ${wu}`,
       `- Balanced: ${a.balanced ? "YES" : "NO"}`,
       ...(a.warnings.length > 0 ? a.warnings.map((w) => `- ⚠ ${w}`) : []),
       ``
