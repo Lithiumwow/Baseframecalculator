@@ -681,6 +681,9 @@ export default function BeamLoadCalculator() {
         sections,
         results,
         cogResult: cogResult ?? undefined,
+        shearForceData,
+        bendingMomentData,
+        deflectionData,
       })
     } catch (error) {
       console.error("Error generating PDF:", error)
