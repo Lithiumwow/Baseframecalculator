@@ -69,8 +69,12 @@ export function parseWeightTableFromRawText(rawText: string): ParsedWeightTable 
   return result
 }
 
+function normalizePasteLine(line: string): string {
+  return line.replace(/\t+/g, " ").replace(/\s+/g, " ").trim()
+}
+
 function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWeightTable {
-  const lines = text.split(/\n/).map((l) => l.trim()).filter(Boolean)
+  const lines = text.split(/\n/).map((l) => normalizePasteLine(l)).filter(Boolean)
 
   const result: ParsedWeightTable = {
     casingSections: [],
@@ -129,7 +133,7 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
 
     // Casing section header line (in or mm, or bare number defaulting to inches)
     if (lower.includes("casing") && lower.includes("length")) {
-      const sectionNoMatch = line.match(/^(\d)\s/)
+      const sectionNoMatch = line.match(/^(\d)[\s\t]/)
       const sectionNo = sectionNoMatch
         ? parseInt(sectionNoMatch[1], 10)
         : currentSectionNo || result.casingSections.length + 1
@@ -636,7 +640,12 @@ export function getCanonicalCasingLengthsIn(
     baseframeIn > 0 &&
     Math.abs(fromLayout.reduce((a, b) => a + b, 0) - baseframeIn) < 3
   ) {
-    return [...fromLayout].sort((a, b) => a - b)
+    const fromTableOrdered = [...table.casingSections]
+      .sort((a, b) => a.sectionNo - b.sectionNo)
+      .map((s) => s.casingLengthIn)
+      .filter((l) => isValidCasingSectionLength(l, baseframeIn))
+    if (fromTableOrdered.length >= 2) return fromTableOrdered
+    return fromLayout
   }
 
   const inferred = inferCasingLengthsIn(baseframeIn, rawText, table.casingSections)
@@ -737,49 +746,43 @@ export function mergeWeightTableWithLayout(
     )
 
   if (needsRebuild || merged.casingSections.length < layoutLengths.length) {
+    const componentGroups = splitComponentsIntoSections(
+      allComponents,
+      layoutLengths.length
+    )
+    const tableByNo = new Map(
+      table.casingSections.map((s) => [s.sectionNo, s] as const)
+    )
+
     merged.casingSections = layoutLengths.map((len, i) => {
+      const sectionNo = i + 1
+      const byNo = tableByNo.get(sectionNo)
       const existing = table.casingSections.find((s) => lengthsMatch(s.casingLengthIn, len))
-      const byNo = table.casingSections.find((s) => s.sectionNo === i + 1)
       const sectionWeightLb =
-        existing?.sectionWeightLb ||
         byNo?.sectionWeightLb ||
+        existing?.sectionWeightLb ||
         weightByLength.get(Math.round(len * 10)) ||
         0
 
+      const componentsForSection =
+        byNo?.components?.length
+          ? [...byNo.components]
+          : existing?.components?.length
+            ? [...existing.components]
+            : componentGroups[i]?.length
+              ? [...componentGroups[i]]
+              : []
+
       return {
-        sectionNo: i + 1,
+        sectionNo,
         casingLengthIn: len,
         sectionWeightLb,
         sectionBaseframeWeightLb:
-          existing?.sectionBaseframeWeightLb ?? byNo?.sectionBaseframeWeightLb,
-        components: existing?.components?.length ? [...existing.components] : byNo?.components?.length ? [...byNo.components] : [],
+          byNo?.sectionBaseframeWeightLb ??
+          existing?.sectionBaseframeWeightLb,
+        components: componentsForSection,
       }
     })
-
-    const anyComponents = merged.casingSections.some((s) => s.components.length > 0)
-    if (!anyComponents && allComponents.length > 0) {
-      const groups = splitComponentsIntoSections(allComponents, layoutLengths.length)
-      groups.forEach((group, i) => {
-        if (merged.casingSections[i]) {
-          merged.casingSections[i].components = group
-        }
-      })
-    } else if (allComponents.length > 0) {
-      const s0Empty = (merged.casingSections[0]?.components.length ?? 0) === 0
-      const assignedCount = merged.casingSections.reduce((n, s) => n + s.components.length, 0)
-      if (s0Empty || assignedCount < allComponents.length) {
-        const pool =
-          assignedCount >= allComponents.length
-            ? merged.casingSections.flatMap((s) => s.components)
-            : allComponents
-        const groups = splitComponentsIntoSections(pool, layoutLengths.length)
-        groups.forEach((group, i) => {
-          if (merged.casingSections[i]) {
-            merged.casingSections[i].components = group
-          }
-        })
-      }
-    }
   } else {
     merged.casingSections.forEach((section, i) => {
       if (layoutLengths[i]) {

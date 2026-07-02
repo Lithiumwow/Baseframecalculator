@@ -5,6 +5,7 @@
 
 import type { LayoutComponentType, LayoutSegment } from "./layoutSymbols"
 import { STANDARD_LAYOUT_SEGMENTS_IN } from "./layoutSegmentDefaults"
+import { INCH_TO_MM } from "./lengthUnits"
 import {
   detectLayoutOrientation,
   analyzeDualDeckLayout,
@@ -36,8 +37,90 @@ function loadImage(file: File | Blob): Promise<HTMLImageElement> {
 
 function parseDimension(text: string): number | null {
   const n = parseFloat(text.replace(/[^\d.]/g, ""))
-  if (isNaN(n) || n < 2 || n > 35) return null
-  return n
+  if (isNaN(n)) return null
+  // Inch segment labels (7.9, 19.7, …)
+  if (n >= 2 && n <= 35) return n
+  return null
+}
+
+/** Component bay lengths in mm from bottom horizontal dimension chain (500, 200, 200, …). */
+export function extractHorizontalBayLengthsMm(
+  words: OCRWord[],
+  imageWidth: number,
+  imageHeight: number,
+  excludeValues: Set<number>
+): number[] {
+  const sectionTotals = new Set([941, 942, 1440, 1441, 2380, 2382, 2383])
+  const candidates: Array<{ val: number; x: number }> = []
+
+  for (const word of words) {
+    const val = parseFloat(word.text.replace(/[^\d.]/g, ""))
+    if (isNaN(val) || val < 80 || val > 2500) continue
+    if (Math.abs(val - Math.round(val)) > 0.01) continue
+    const rounded = Math.round(val)
+    if (sectionTotals.has(rounded)) continue
+    if (excludeValues.has(val) || excludeValues.has(val / INCH_TO_MM)) continue
+
+    const xCenter = (word.bbox.x0 + word.bbox.x1) / 2
+    const yCenter = (word.bbox.y0 + word.bbox.y1) / 2
+    // Bottom dimension row on side-view drawings
+    if (yCenter < imageHeight * 0.52) continue
+    if (xCenter < imageWidth * 0.08 || xCenter > imageWidth * 0.92) continue
+
+    candidates.push({ val: rounded, x: xCenter })
+  }
+
+  candidates.sort((a, b) => a.x - b.x)
+
+  const ordered: number[] = []
+  let lastX = -999
+  for (const c of candidates) {
+    if (ordered.length > 0 && Math.abs(c.x - lastX) < 15) continue
+    ordered.push(c.val)
+    lastX = c.x
+  }
+
+  // Typical AHU: 3–8 component bays summing to section totals
+  if (ordered.length >= 3 && ordered.length <= 12) {
+    const sum = ordered.reduce((a, b) => a + b, 0)
+    if (sum >= 800 && sum <= 2600) return ordered
+  }
+
+  return []
+}
+
+async function detectSegmentTypesHorizontal(
+  imageFile: File | Blob,
+  bayLengthsMm: number[],
+  imageWidth: number,
+  imageHeight: number
+): Promise<LayoutComponentType[]> {
+  if (bayLengthsMm.length === 0) return []
+
+  const img = await loadImage(imageFile)
+  const canvas = document.createElement("canvas")
+  canvas.width = img.width
+  canvas.height = img.height
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return bayLengthsMm.map(() => "unknown" as LayoutComponentType)
+
+  ctx.drawImage(img, 0, 0)
+
+  const scaleX = img.width / imageWidth
+  const y0 = img.height * 0.15
+  const y1 = img.height * 0.55
+  let xCursor = img.width * 0.1
+  const totalMm = bayLengthsMm.reduce((a, b) => a + b, 0)
+  const types: LayoutComponentType[] = []
+
+  for (const lenMm of bayLengthsMm) {
+    const x1 = xCursor + (lenMm / totalMm) * (img.width * 0.82)
+    const metrics = analyzeStrip(ctx, xCursor, y0, x1, y1)
+    types.push(classifyStrip(metrics))
+    xCursor = x1
+  }
+
+  return types
 }
 
 /** Extract segment lengths in top-to-bottom order from OCR word positions (right-side view). */
@@ -258,6 +341,24 @@ export async function analyzeLayoutDrawing(
     if (dualSegments.length > 0) {
       return { segments: dualSegments, orientation }
     }
+  }
+
+  const excludeMm = new Set([...excludeValues].flatMap((v) => [v, Math.round(v * INCH_TO_MM)]))
+
+  const mmBays = extractHorizontalBayLengthsMm(words, img.width, img.height, excludeMm)
+  if (mmBays.length >= 3) {
+    const types = await detectSegmentTypesHorizontal(
+      imageFile,
+      mmBays,
+      img.width,
+      img.height
+    )
+    const segments: LayoutSegment[] = mmBays.map((mm, i) => ({
+      lengthIn: mm / INCH_TO_MM,
+      type: types[i] && types[i] !== "unknown" ? types[i] : "unknown",
+      typeConfidence: types[i] !== "unknown" ? 0.75 : 0.25,
+    }))
+    return { segments, orientation: "vertical" }
   }
 
   let lengthsIn = extractDimensionsInSpatialOrder(words, img.width, excludeValues)

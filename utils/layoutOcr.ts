@@ -34,22 +34,26 @@ export interface ParsedLayout {
 
 function findBaseframeLength(valuesIn: number[]): number {
   const candidates = valuesIn.filter((v) => v >= 50 && v <= 400)
-  return candidates.length > 0 ? Math.max(...candidates) : 0
+  if (candidates.length > 0) return Math.max(...candidates)
+  // mm drawings: total length ~2000–3500 mm → inches
+  const mmTotal = valuesIn.filter((v) => v >= 70 && v <= 140)
+  return mmTotal.length > 0 ? Math.max(...mmTotal) : 0
 }
 
 function findCasingSectionLengths(valuesIn: number[], baseframeLength: number): number[] {
-  const tolerance = 2
+  const tolerance = baseframeLength > 100 ? 5 : 2
   for (let i = 0; i < valuesIn.length; i++) {
     for (let j = i + 1; j < valuesIn.length; j++) {
       const sum = valuesIn[i] + valuesIn[j]
       if (Math.abs(sum - baseframeLength) < tolerance) {
+        // Preserve weight-table order when possible: shorter section first (Section 1)
         return [Math.min(valuesIn[i], valuesIn[j]), Math.max(valuesIn[i], valuesIn[j])]
       }
     }
   }
 
   const under = valuesIn.filter((v) => v < baseframeLength && v > 20).sort((a, b) => b - a)
-  if (under.length >= 2) return [under[0], under[1]]
+  if (under.length >= 2) return [under[1], under[0]].sort((a, b) => a - b)
   return []
 }
 

@@ -43,6 +43,7 @@ export function inferKindFromWeightName(name: string): WeightComponentKind | nul
   if (n.includes("fan")) return "fan"
   if (n.includes("control")) return "control_box"
   if (n.includes("filter")) return "filter"
+  // Damper / inlet (often first bay on mm drawings)
   if (n.includes("damper")) return "damper"
   if (n.includes("inspection")) return "inspection"
   if (n.includes("special")) return "special"
@@ -373,4 +374,88 @@ export function sequentialLoadPlacementsInSection(
   }
 
   return placements
+}
+
+export interface LayoutDrivenLoadRow {
+  positionMm: number
+  loadLengthMm: number
+  displayName: string
+  weightLb: number
+}
+
+/**
+ * One load per layout bay — lengths from drawing, weights matched by symbol when possible.
+ * Unrecognised bays: Component A/B/C; unmatched weights appended at end.
+ */
+export function layoutDrivenLoadPlacementsInSection(
+  sectionComponents: Array<{ name: string; weightLb: number }>,
+  sectionSegments: LayoutSegment[],
+  sectionLengthMm: number,
+  inchesToMmFn: (inches: number) => number
+): LayoutDrivenLoadRow[] {
+  if (sectionSegments.length === 0 || sectionLengthMm <= 0) {
+    return sequentialLoadPlacementsInSection(
+      sectionComponents,
+      sectionSegments,
+      sectionLengthMm / 25.4,
+      sectionLengthMm,
+      inchesToMmFn
+    ).map((p, i) => ({
+      ...p,
+      weightLb: sectionComponents[i]?.weightLb ?? 0,
+    }))
+  }
+
+  const usedComp = new Set<number>()
+  let cursorMm = 0
+  const rows: LayoutDrivenLoadRow[] = []
+
+  const takeComponent = (seg: LayoutSegment, bayIndex: number): { comp: typeof sectionComponents[0]; idx: number } | null => {
+    for (let i = 0; i < sectionComponents.length; i++) {
+      if (usedComp.has(i)) continue
+      const kind = inferKindFromWeightName(sectionComponents[i].name)
+      if (kind && kind !== "casing" && segmentMatchesComponentKind(seg, kind)) {
+        usedComp.add(i)
+        return { comp: sectionComponents[i], idx: i }
+      }
+    }
+    for (let i = 0; i < sectionComponents.length; i++) {
+      if (!usedComp.has(i)) {
+        usedComp.add(i)
+        return { comp: sectionComponents[i], idx: i }
+      }
+    }
+    return null
+  }
+
+  sectionSegments.forEach((seg, bayIndex) => {
+    let loadLengthMm = Math.round(inchesToMmFn(seg.lengthIn) * 10) / 10
+    if (bayIndex === sectionSegments.length - 1) {
+      loadLengthMm = Math.round((sectionLengthMm - cursorMm) * 10) / 10
+    }
+    loadLengthMm = Math.max(1, Math.min(loadLengthMm, sectionLengthMm - cursorMm))
+    if (loadLengthMm <= 0) return
+
+    const matched = takeComponent(seg, bayIndex)
+    const weightLb = matched?.comp.weightLb ?? 0
+
+    let displayName: string
+    if (seg.type !== "unknown") {
+      displayName = layoutTypeLabel(seg.type)
+      if (matched?.comp) displayName += ` (${matched.comp.name})`
+    } else {
+      displayName = `Component ${String.fromCharCode(65 + bayIndex)}`
+      if (matched?.comp) displayName += ` (${matched.comp.name})`
+    }
+
+    rows.push({
+      positionMm: cursorMm,
+      loadLengthMm,
+      displayName,
+      weightLb,
+    })
+    cursorMm = Math.round((cursorMm + loadLengthMm) * 10) / 10
+  })
+
+  return rows
 }

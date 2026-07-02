@@ -32,6 +32,7 @@ import {
   syntheticSegmentsFromComponents,
   weightTableComponentsForLoads,
   sequentialLoadPlacementsInSection,
+  layoutDrivenLoadPlacementsInSection,
 } from "./layoutSymbols"
 import {
   assignDualDeckBayLoads,
@@ -305,22 +306,33 @@ function assignComponentLoads(
       continue
     }
 
-    const placements = sequentialLoadPlacementsInSection(
-      sectionComponents,
-      sectionSegments,
-      sectionLengthIn,
-      sectionLengthMm,
-      inchesToMm
-    )
+    const placements = hasRealLayout && sectionSegments.length > 0
+      ? layoutDrivenLoadPlacementsInSection(
+          sectionComponents,
+          sectionSegments,
+          sectionLengthMm,
+          inchesToMm
+        )
+      : sequentialLoadPlacementsInSection(
+          sectionComponents,
+          sectionSegments,
+          sectionLengthIn,
+          sectionLengthMm,
+          inchesToMm
+        ).map((p, compIdx) => ({
+          positionMm: p.positionMm,
+          loadLengthMm: p.loadLengthMm,
+          displayName: p.displayName,
+          weightLb: sectionComponents[compIdx]?.weightLb ?? 0,
+        }))
 
-    placements.forEach((placement, compIdx) => {
-      const comp = sectionComponents[compIdx]
-      if (!comp) return
+    placements.forEach((placement) => {
+      if (placement.loadLengthMm <= 0) return
       components.push({
         name: placement.displayName,
         sectionIndex: sectionIdx,
         position: placement.positionMm,
-        weight: comp.weightLb,
+        weight: placement.weightLb,
         weightUnit,
         loadType: "Distributed Load",
         loadLength: Math.round(placement.loadLengthMm),

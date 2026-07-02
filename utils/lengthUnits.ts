@@ -121,6 +121,15 @@ export function extractDimensionValuesInches(ocrText: string): number[] {
     if (val >= 2 && val <= 400) inches.push(val)
   }
 
+  // Bare whole numbers on mm drawings (500, 941, 2382)
+  const wholeRe = /\b(\d{2,4})\b/g
+  while ((m = wholeRe.exec(ocrText)) !== null) {
+    const val = parseFloat(m[1])
+    if (val >= 80 && val <= 2500 && Math.abs(val - Math.round(val)) < 0.01) {
+      inches.push(toInches(val, "mm"))
+    }
+  }
+
   return [...new Set(inches.map((v) => Math.round(v * 1000) / 1000))].sort((a, b) => b - a)
 }
 
