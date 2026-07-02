@@ -40,7 +40,6 @@ import {
   assignDualDeckBayLoads,
   looksLikeDualDeckWeightTable,
 } from "./dualDeckWeight"
-import { parseWeightTableFromRawText } from "./weightTableParser"
 
 export interface ParsedWeightRow {
   sectionNo: number
