@@ -247,14 +247,33 @@ function parseWeightTableLines(text: string, weightUnit: "lbs" | "kg"): ParsedWe
   return result
 }
 
-/** Match per-section baseframe rows (37.0 in → 98 lb) onto casing sections by length. */
+/** Match baseframe rows onto casing sections; consume rows so duplicate lengths (33.1 in) stay unique. */
 function applyBaseframeWeightsToSections(result: ParsedWeightTable): void {
+  const usedRow = new Set<number>()
+
   for (const section of result.casingSections) {
-    const match = result.baseframeByCasingLengthIn.find((b) =>
-      lengthsMatch(b.lengthIn, section.casingLengthIn, 0.6)
+    const idx = result.baseframeByCasingLengthIn.findIndex(
+      (b, i) => !usedRow.has(i) && lengthsMatch(b.lengthIn, section.casingLengthIn, 0.6)
     )
-    if (match) {
-      section.sectionBaseframeWeightLb = match.weightLb
+    if (idx >= 0) {
+      section.sectionBaseframeWeightLb = result.baseframeByCasingLengthIn[idx].weightLb
+      usedRow.add(idx)
+    }
+  }
+
+  const unmatchedRows = result.baseframeByCasingLengthIn.filter((_, i) => !usedRow.has(i))
+  for (const row of unmatchedRows) {
+    const targets = result.casingSections.filter((s) => !s.sectionBaseframeWeightLb)
+    if (targets.length === 0) continue
+
+    const totalLen = targets.reduce((s, t) => s + (t.casingLengthIn > 0 ? t.casingLengthIn : 0), 0)
+    for (const section of targets) {
+      const share =
+        totalLen > 0
+          ? (section.casingLengthIn / totalLen) * row.weightLb
+          : row.weightLb / targets.length
+      section.sectionBaseframeWeightLb =
+        Math.round(((section.sectionBaseframeWeightLb || 0) + share) * 10) / 10
     }
   }
 

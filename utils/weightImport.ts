@@ -22,6 +22,8 @@ export interface WeightImportData {
     /** Weather hood, connections, etc. — counted in COG but not section roof fields */
     otherComponents?: number
     baseframe?: number
+    /** Weight of unit from Systemair table */
+    unitTotal?: number
     unit?: "N" | "kg" | "lbs"
   }
 }

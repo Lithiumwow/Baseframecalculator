@@ -29,6 +29,8 @@ interface UseBeamCalculationsParams {
   setResults: (results: Results) => void
   totalRoofWeight: number // Total roof weight for entire frame
   totalRoofWeightUnit: "N" | "kg" | "lbs"
+  otherComponentsWeight: number
+  otherComponentsWeightUnit: "N" | "kg" | "lbs"
 }
 
 export function useBeamCalculations(params: UseBeamCalculationsParams) {
@@ -56,6 +58,8 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
     setResults,
     totalRoofWeight,
     totalRoofWeightUnit,
+    otherComponentsWeight,
+    otherComponentsWeightUnit,
   } = params
 
   const calculateResults = useCallback(() => {
@@ -369,6 +373,28 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
 
       totalAppliedLoad += frameWeightN
 
+      // Other components (weather hood, connections, etc.) — lump at frame center
+      const otherComponentsN = convertSectionWeightToN(
+        otherComponentsWeight,
+        otherComponentsWeightUnit
+      )
+      if (otherComponentsN > 0) {
+        const centerX = frameLengthM / 2
+        const centerY = frameWidthM / 2
+        const areaR1 = (frameLengthM - centerX) * (frameWidthM - centerY)
+        const areaR2 = centerX * (frameWidthM - centerY)
+        const areaR3 = (frameLengthM - centerX) * centerY
+        const areaR4 = centerX * centerY
+        const totalArea = frameLengthM * frameWidthM
+        if (totalArea > 0) {
+          R1 += otherComponentsN * (areaR1 / totalArea)
+          R2 += otherComponentsN * (areaR2 / totalArea)
+          R3 += otherComponentsN * (areaR3 / totalArea)
+          R4 += otherComponentsN * (areaR4 / totalArea)
+        }
+        totalAppliedLoad += otherComponentsN
+      }
+
       // Calculate critical beam lengths for both frame directions
       const longitudinalSpanM = frameLengthM
       const transverseSpanM = frameWidthM
@@ -519,6 +545,8 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
     setResults,
     totalRoofWeight,
     totalRoofWeightUnit,
+    otherComponentsWeight,
+    otherComponentsWeightUnit,
   ])
 
   return { calculateResults }

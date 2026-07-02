@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts"
 import Head from "next/head"
-import { Download, Loader2, Calculator, Mail, BarChart3, Ruler, Package, Tag, Info, RotateCcw } from "lucide-react"
+import { Download, Loader2, Calculator, Mail, BarChart3, Ruler, Package, Tag, Info, RotateCcw, CheckCircle, AlertCircle } from "lucide-react"
 
 // Import from modules
 import type { Load, Section, Results } from "./types"
@@ -21,6 +21,12 @@ import { BeamCrossSectionImage } from "./components/BeamCrossSectionImage"
 import { WeightImportDialog, type WeightImportResult } from "./components/WeightImportDialog"
 import type { COGResult } from "./utils/cogCalculation"
 import { calculateCOG, buildCOGItemsFromImport } from "./utils/cogCalculation"
+import {
+  auditAppWeights,
+  mergeWeightAudits,
+  type WeightAuditBreakdown,
+} from "./utils/weightAudit"
+import { buildSessionLog, downloadSessionLog } from "./utils/sessionLogExport"
 import { useBeamCalculations } from "./hooks/useBeamCalculations"
 import { useDiagramCalculations } from "./hooks/useDiagramCalculations"
 import { generatePDF } from "./utils/pdfGeneration"
@@ -84,6 +90,11 @@ export default function BeamLoadCalculator() {
   })
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
   const [cogResult, setCogResult] = useState<COGResult | null>(null)
+  const [unitTotalLb, setUnitTotalLb] = useState(0)
+  const [otherComponentsWeight, setOtherComponentsWeight] = useState(0)
+  const [otherComponentsWeightUnit, setOtherComponentsWeightUnit] = useState<"N" | "kg" | "lbs">("lbs")
+  const [weightAudit, setWeightAudit] = useState<WeightAuditBreakdown | null>(null)
+  const [importJson, setImportJson] = useState("")
 
   const syncFrameLengthFromSections = (sectionList: Section[]) => {
     if (sectionList.length === 0) return
@@ -129,6 +140,11 @@ export default function BeamLoadCalculator() {
     setGenioxType(defaults.genioxType)
     setSections([])
     setCogResult(null)
+    setUnitTotalLb(0)
+    setOtherComponentsWeight(0)
+    setOtherComponentsWeightUnit("lbs")
+    setWeightAudit(null)
+    setImportJson("")
     setLoads(
       nextAnalysisType === "Base Frame"
         ? getDefaultBaseFrameLoads(getGenioxFrameWidth(parseInt(defaults.genioxType, 10)))
@@ -163,6 +179,13 @@ export default function BeamLoadCalculator() {
     }
     setSections(result.sections)
     setLoads(result.loads)
+    if (result.unitTotalLb !== undefined) setUnitTotalLb(result.unitTotalLb)
+    if (result.otherComponentsLb !== undefined) {
+      setOtherComponentsWeight(result.otherComponentsLb)
+      setOtherComponentsWeightUnit(result.totalRoofWeightUnit || "lbs")
+    }
+    if (result.weightAudit) setWeightAudit(result.weightAudit)
+    if (result.importJson) setImportJson(result.importJson)
     if (result.cog) {
       setCogResult(result.cog)
     } else {
@@ -176,7 +199,7 @@ export default function BeamLoadCalculator() {
             fw,
             result.totalRoofWeight,
             result.totalRoofWeightUnit,
-            undefined,
+            result.otherComponentsLb,
           ),
           fl,
           fw,
@@ -184,6 +207,65 @@ export default function BeamLoadCalculator() {
         ),
       )
     }
+  }
+
+  const handleExportSessionLog = () => {
+    const reactionSum =
+      results.cornerReactions.R1 +
+      results.cornerReactions.R2 +
+      results.cornerReactions.R3 +
+      results.cornerReactions.R4
+    const notes: string[] = [
+      "Beam stress/deflection uses a simplified perimeter-beam model — screening only, not final design sign-off.",
+      "Force diagrams use equivalent uniform load; corner reactions use position-aware area method.",
+    ]
+    if (unitTotalLb > 0 && weightAudit && !weightAudit.balanced) {
+      notes.push(`Weight mismatch: calculator ${weightAudit.appComputedLb.toFixed(1)} lb vs unit total ${unitTotalLb} lb.`)
+    }
+    if (results.totalAppliedLoad > 0) {
+      const pct = Math.abs(reactionSum - results.totalAppliedLoad) / results.totalAppliedLoad
+      if (pct > 0.02) {
+        notes.push(
+          `Corner reactions sum (${reactionSum.toFixed(0)} N) differs from total applied load (${results.totalAppliedLoad.toFixed(0)} N) by ${(pct * 100).toFixed(1)}%.`
+        )
+      }
+    }
+
+    const log = buildSessionLog({
+      inputs: {
+        analysisType,
+        genioxType,
+        frameLengthMm: frameLength,
+        frameWidthMm: frameWidth,
+        beamCrossSection,
+        material,
+        beamProfile: {
+          width,
+          height,
+          flangeWidth,
+          flangeThickness,
+          webThickness,
+          diameter,
+          beamDensity,
+        },
+        totalRoofWeight,
+        totalRoofWeightUnit,
+        otherComponentsLb: otherComponentsWeight,
+        unitTotalLb,
+        sections,
+        loads,
+      },
+      weightAudit,
+      outputs: {
+        results,
+        cog: cogResult,
+        cornerReactions: results.cornerReactions,
+        totalAppliedLoadN: results.totalAppliedLoad,
+      },
+      importJson: importJson || undefined,
+      notes,
+    })
+    downloadSessionLog(log)
   }
 
   // Use calculation hooks
@@ -211,6 +293,8 @@ export default function BeamLoadCalculator() {
     setResults,
     totalRoofWeight,
     totalRoofWeightUnit,
+    otherComponentsWeight,
+    otherComponentsWeightUnit,
   })
 
   const { calculateDiagrams } = useDiagramCalculations({
@@ -528,10 +612,41 @@ export default function BeamLoadCalculator() {
       loads,
       frameWidth,
       totalRoofWeight > 0 ? totalRoofWeight : undefined,
-      totalRoofWeightUnit
+      totalRoofWeightUnit,
+      otherComponentsWeight > 0 ? otherComponentsWeight : undefined
     )
     setCogResult(calculateCOG(items, frameLength, frameWidth, totalRoofWeightUnit || "lbs"))
-  }, [analysisType, sections, loads, frameLength, frameWidth, totalRoofWeight, totalRoofWeightUnit])
+  }, [
+    analysisType,
+    sections,
+    loads,
+    frameLength,
+    frameWidth,
+    totalRoofWeight,
+    totalRoofWeightUnit,
+    otherComponentsWeight,
+  ])
+
+  // Keep weight audit in sync when sections/loads change after import
+  useEffect(() => {
+    if (unitTotalLb <= 0 && sections.length === 0) return
+    const appAudit = auditAppWeights(sections, loads, {
+      unitTotalLb,
+      otherComponentsLb: otherComponentsWeight,
+      totalRoofWeight,
+      totalRoofWeightUnit,
+      weightUnit: otherComponentsWeightUnit,
+    })
+    setWeightAudit((prev) => (prev ? mergeWeightAudits(prev, appAudit) : appAudit))
+  }, [
+    sections,
+    loads,
+    unitTotalLb,
+    otherComponentsWeight,
+    otherComponentsWeightUnit,
+    totalRoofWeight,
+    totalRoofWeightUnit,
+  ])
 
   const handleDownloadPDF = async () => {
     setIsGeneratingPDF(true)
@@ -609,6 +724,16 @@ export default function BeamLoadCalculator() {
             <Mail className="w-4 h-4" />
             <span className="text-sm font-medium hidden sm:inline">hbradroc@uwo.ca</span>
           </a>
+          <Button
+            onClick={handleExportSessionLog}
+            size="sm"
+            variant="outline"
+            className="flex items-center gap-2"
+            title="Download JSON log of inputs, weights, and results for debugging"
+          >
+            <Download className="w-4 h-4" />
+            Export Log
+          </Button>
           <Button
             onClick={handleReset}
             size="sm"
@@ -1615,6 +1740,53 @@ export default function BeamLoadCalculator() {
             <CardDescription className="text-sm">View the calculated results and safety factors.</CardDescription>
           </CardHeader>
           <CardContent className="p-6">
+            {unitTotalLb > 0 && weightAudit && (
+              <div
+                className={`mb-6 rounded-lg border p-4 ${
+                  weightAudit.balanced
+                    ? "border-green-200 bg-green-50"
+                    : "border-amber-300 bg-amber-50"
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  {weightAudit.balanced ? (
+                    <CheckCircle className="w-5 h-5 text-green-600 mt-0.5 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 shrink-0" />
+                  )}
+                  <div className="text-sm">
+                    <p className="font-semibold text-gray-900">
+                      Weight of unit: {unitTotalLb} lb
+                      {weightAudit.balanced ? " — balanced" : " — mismatch"}
+                    </p>
+                    <p className="text-gray-700 mt-1">
+                      Calculator total: <strong>{weightAudit.appComputedLb.toFixed(1)} lb</strong>
+                      {weightAudit.tableComputedLb > 0 && (
+                        <>
+                          {" "}
+                          | Parsed table: <strong>{weightAudit.tableComputedLb.toFixed(1)} lb</strong>
+                        </>
+                      )}
+                      {" "}
+                      | Δ {weightAudit.deltaLb > 0 ? "+" : ""}
+                      {weightAudit.deltaLb.toFixed(1)} lb
+                    </p>
+                    <p className="text-xs text-gray-600 mt-1">
+                      Components {weightAudit.appComponentLoadsLb.toFixed(0)} + Casing{" "}
+                      {weightAudit.appCasingLb.toFixed(0)} + Baseframe{" "}
+                      {weightAudit.appBaseframeLb.toFixed(0)} + Other{" "}
+                      {weightAudit.appOtherLb.toFixed(0)} lb
+                      {weightAudit.appRoofLb > 0 && ` + Roof ${weightAudit.appRoofLb.toFixed(0)}`}
+                    </p>
+                    {weightAudit.warnings.map((w) => (
+                      <p key={w} className="text-xs text-amber-800 mt-1">
+                        {w}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               <div className="text-center p-4 bg-blue-50 rounded-lg border border-blue-200">
                 <div className="text-2xl font-bold text-blue-600">{results.maxShearForce}</div>

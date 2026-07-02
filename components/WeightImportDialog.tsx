@@ -36,6 +36,7 @@ import {
 import { processWeightSheets, processWeightTablePaste, type COGResult } from "../utils/weightSheetImport"
 import { isSystemairWeightTableText } from "../utils/weightTableParser"
 import { calculateCOG, buildCOGItemsFromImport } from "../utils/cogCalculation"
+import type { WeightAuditBreakdown } from "../utils/weightAudit"
 
 export interface WeightImportResult {
   sections: Section[]
@@ -46,6 +47,9 @@ export interface WeightImportResult {
   totalRoofWeightUnit?: "N" | "kg" | "lbs"
   cog?: COGResult
   importJson?: string
+  unitTotalLb?: number
+  otherComponentsLb?: number
+  weightAudit?: WeightAuditBreakdown
 }
 
 interface WeightImportDialogProps {
@@ -205,6 +209,9 @@ export function WeightImportDialog({
         totalRoofWeightUnit: result.totalRoofWeightUnit,
         cog: result.cog,
         importJson: result.json,
+        unitTotalLb: result.unitTotalLb,
+        otherComponentsLb: result.otherComponentsLb,
+        weightAudit: result.weightAudit,
       })
       setError(null)
     } catch (err) {
@@ -266,6 +273,9 @@ export function WeightImportDialog({
           totalRoofWeightUnit: result.totalRoofWeightUnit,
           cog: result.cog,
           importJson: result.json,
+          unitTotalLb: result.unitTotalLb,
+          otherComponentsLb: result.otherComponentsLb,
+          weightAudit: result.weightAudit,
         })
         return
       }
@@ -564,6 +574,32 @@ Weight of unit 1134`
                     <strong>{preview.sections.length}</strong> section(s),{" "}
                     <strong>{preview.loads.length}</strong> component load(s)
                   </div>
+
+                  {preview.weightAudit && preview.unitTotalLb && preview.unitTotalLb > 0 && (
+                    <div
+                      className={`mt-2 p-2 rounded border text-xs ${
+                        preview.weightAudit.balanced
+                          ? "bg-green-50 border-green-200"
+                          : "bg-amber-50 border-amber-200"
+                      }`}
+                    >
+                      <div className="font-semibold">
+                        Weight of unit: {preview.unitTotalLb} lb
+                        {preview.weightAudit.balanced ? " ✓ balanced" : " — check totals"}
+                      </div>
+                      <div>
+                        Parsed: {preview.weightAudit.tableComputedLb.toFixed(1)} lb | App:{" "}
+                        {preview.weightAudit.appComputedLb.toFixed(1)} lb | Δ{" "}
+                        {preview.weightAudit.deltaLb > 0 ? "+" : ""}
+                        {preview.weightAudit.deltaLb.toFixed(1)} lb
+                      </div>
+                      {preview.weightAudit.warnings.map((w) => (
+                        <div key={w} className="text-amber-800 mt-1">
+                          {w}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {preview.cog && (
                     <div className="mt-2 p-2 bg-blue-50 rounded border border-blue-100">

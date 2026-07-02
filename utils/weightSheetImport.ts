@@ -40,6 +40,11 @@ import {
   assignDualDeckBayLoads,
   looksLikeDualDeckWeightTable,
 } from "./dualDeckWeight"
+import {
+  auditParsedWeightTable,
+  auditAppWeights,
+  mergeWeightAudits,
+} from "./weightAudit"
 
 export interface ParsedWeightRow {
   sectionNo: number
@@ -61,6 +66,9 @@ export interface SheetImportResult {
   totalRoofWeightUnit: "lbs" | "kg"
   sections: Section[]
   loads: Load[]
+  unitTotalLb: number
+  otherComponentsLb: number
+  weightAudit: import("./weightAudit").WeightAuditBreakdown
 }
 
 const SKIP_COMPONENTS = new Set<string>() // all components become distributed loads
@@ -447,9 +455,6 @@ export function buildWeightImportFromSheets(
 
     const sectionBaseframe =
       cs.sectionBaseframeWeightLb ??
-      weightTable.baseframeByCasingLengthIn.find((b) =>
-        Math.abs(b.lengthIn - lengthIn) < 0.6
-      )?.weightLb ??
       (totalCasingLengthIn > 0
         ? Math.round(weightTable.baseframeWeightLb * lengthRatio * 10) / 10
         : 0)
@@ -491,6 +496,7 @@ export function buildWeightImportFromSheets(
       roof: 0,
       otherComponents: weightTable.otherComponentsLb,
       baseframe: weightTable.baseframeWeightLb,
+      unitTotal: weightTable.unitTotalLb,
       unit,
     },
   }
@@ -669,6 +675,16 @@ async function finalizeWeightSheetImport(
   )
   const cog = calculateCOG(cogItems, frameLength, frameWidth, totalRoofWeightUnit)
 
+  const tableAudit = auditParsedWeightTable(weightTable)
+  const appAudit = auditAppWeights(sections, loads, {
+    unitTotalLb: weightTable.unitTotalLb,
+    otherComponentsLb: otherComponentsWeight,
+    totalRoofWeight,
+    totalRoofWeightUnit,
+    weightUnit: weightTable.weightUnit,
+  })
+  const weightAudit = mergeWeightAudits(tableAudit, appAudit)
+
   onProgress?.("Done", 100)
 
   return {
@@ -681,6 +697,9 @@ async function finalizeWeightSheetImport(
     totalRoofWeightUnit,
     sections,
     loads,
+    unitTotalLb: weightTable.unitTotalLb,
+    otherComponentsLb: otherComponentsWeight,
+    weightAudit,
   }
 }
 
@@ -758,16 +777,29 @@ export function buildExampleImport(genioxType: number = 10): SheetImportResult {
   const cogItems = buildCOGItemsFromImport(sections, loads, frameWidth, 0, "lbs", 179)
   const cog = calculateCOG(cogItems, frameLength, frameWidth, "lbs")
 
+  const tableAudit = auditParsedWeightTable(weightTable)
+  const appAudit = auditAppWeights(sections, loads, {
+    unitTotalLb: weightTable.unitTotalLb,
+    otherComponentsLb: weightTable.otherComponentsLb,
+    totalRoofWeight: 0,
+    totalRoofWeightUnit: "lbs",
+    weightUnit: "lbs",
+  })
+  const weightAudit = mergeWeightAudits(tableAudit, appAudit)
+
   return {
     importData,
     json,
     cog,
     frameLength,
     frameWidth,
-    totalRoofWeight: 179,
+    totalRoofWeight: 0,
     totalRoofWeightUnit: "lbs",
     sections,
     loads,
+    unitTotalLb: weightTable.unitTotalLb,
+    otherComponentsLb: weightTable.otherComponentsLb,
+    weightAudit,
   }
 }
 
