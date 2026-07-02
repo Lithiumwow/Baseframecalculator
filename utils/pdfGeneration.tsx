@@ -6,7 +6,8 @@ import { standardMaterials } from "../constants"
 import { getLoadMagnitudeInN, getDistributedLoadTotalWeightN } from "./conversions"
 import type { COGResult } from "./cogCalculation"
 import { renderAreaChartToPng } from "./chartToPng"
-import { renderDiagramToPng } from "./renderDiagramToPng"
+import { renderDiagramSvg, renderDiagramToPng } from "./renderDiagramToPng"
+import { svg2pdf } from "svg2pdf.js"
 import { BeamDiagram, FrameDiagram, CornerLoadsDiagram } from "../components/diagrams"
 
 interface PDFGenerationParams {
@@ -188,6 +189,46 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     origHeight = 320,
   ): number => {
     return embedDiagramImage(img, origWidth, origHeight, yPos).y
+  }
+
+  const embedSvgDiagram = async (
+    element: React.ReactElement,
+    origWidth: number,
+    origHeight: number,
+    yPos: number,
+  ): Promise<number> => {
+    const { width: diagramWidth, height: diagramHeight } = computeDiagramSize(origWidth, origHeight, yPos)
+    const diagramX = (pageWidth - diagramWidth) / 2
+
+    const host = document.createElement("div")
+    host.style.position = "fixed"
+    host.style.left = "0"
+    host.style.top = "0"
+    host.style.opacity = "0"
+    host.style.pointerEvents = "none"
+    host.style.zIndex = "-1"
+    document.body.appendChild(host)
+
+    try {
+      const svg = await renderDiagramSvg(element)
+      host.appendChild(svg)
+      pdf.setDrawColor(0, 0, 0)
+      pdf.setLineWidth(0.5)
+      pdf.rect(diagramX - 3, yPos - 3, diagramWidth + 6, diagramHeight + 6)
+      await svg2pdf(svg, pdf, {
+        x: diagramX,
+        y: yPos,
+        width: diagramWidth,
+        height: diagramHeight,
+      })
+      return yPos + diagramHeight + 12
+    } catch (error) {
+      console.warn("SVG embed failed, falling back to PNG rasterization:", error)
+      const png = await renderDiagramToPng(element, origWidth, origHeight)
+      return embedDiagramImage(png, origWidth, origHeight, yPos).y
+    } finally {
+      host.remove()
+    }
   }
 
   // LaTeX-style Title Page - Clean and minimal
@@ -452,7 +493,11 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
 
   try {
     if (analysisType === "Simple Beam") {
-      const structureImg = await renderDiagramToPng(
+      if (yOffset + 80 > pageHeight - 40) {
+        pdf.addPage()
+        yOffset = 40
+      }
+      yOffset = await embedSvgDiagram(
         <BeamDiagram
           beamLength={beamLength}
           leftSupport={leftSupport}
@@ -461,14 +506,14 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
         />,
         500,
         250,
+        yOffset,
       )
+    } else {
       if (yOffset + 80 > pageHeight - 40) {
         pdf.addPage()
         yOffset = 40
       }
-      yOffset = embedDiagramImage(structureImg, 500, 250, yOffset).y
-    } else {
-      const structureImg = await renderDiagramToPng(
+      yOffset = await embedSvgDiagram(
         <FrameDiagram
           frameLength={frameLength}
           frameWidth={frameWidth}
@@ -479,12 +524,8 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
         />,
         500,
         450,
+        yOffset,
       )
-      if (yOffset + 80 > pageHeight - 40) {
-        pdf.addPage()
-        yOffset = 40
-      }
-      yOffset = embedDiagramImage(structureImg, 500, 450, yOffset).y
     }
   } catch (error) {
     console.error("Error rendering structure diagram:", error)
@@ -509,7 +550,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
       yOffset = addSubsectionHeader("4.2 Corner Loads Analysis", margin, yOffset)
       yOffset += 8
 
-      const cornerImg = await renderDiagramToPng(
+      yOffset = await embedSvgDiagram(
         <CornerLoadsDiagram
           frameLength={frameLength}
           frameWidth={frameWidth}
@@ -520,8 +561,8 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
         />,
         700,
         520,
+        yOffset,
       )
-      yOffset = embedDiagramImage(cornerImg, 700, 520, yOffset).y
     } catch (error) {
       console.error("Error rendering corner loads diagram:", error)
       yOffset = addWrappedText(
