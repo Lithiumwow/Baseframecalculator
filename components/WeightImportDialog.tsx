@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -53,16 +53,12 @@ interface WeightImportDialogProps {
   onImport: (result: WeightImportResult) => void
   frameLength: number
   frameWidth: number
-  existingSections: Section[]
-  existingLoads: Load[]
 }
 
 export function WeightImportDialog({
   onImport,
   frameLength,
   frameWidth,
-  existingSections,
-  existingLoads,
 }: WeightImportDialogProps) {
   const [open, setOpen] = useState(false)
   const [importText, setImportText] = useState("")
@@ -77,6 +73,26 @@ export function WeightImportDialog({
   const [weightsImage, setWeightsImage] = useState<File | null>(null)
   const [pastedWeightText, setPastedWeightText] = useState("")
 
+  const resetImportForm = () => {
+    setImportText("")
+    setImportType("ocr")
+    setError(null)
+    setPreview(null)
+    setIsProcessingOCR(false)
+    setOcrProgress(0)
+    setOcrStage("")
+    setGenioxType("10")
+    setLayoutImage(null)
+    setWeightsImage(null)
+    setPastedWeightText("")
+  }
+
+  useEffect(() => {
+    if (open) {
+      resetImportForm()
+    }
+  }, [open])
+
   const buildPreviewFromImportData = (
     importData: WeightImportData,
     cog?: COGResult
@@ -86,7 +102,7 @@ export function WeightImportDialog({
 
     const sections = importData.sections
       ? convertImportedSections(importData.sections, effectiveFrameLength)
-      : existingSections
+      : []
 
     const loads = importData.components
       ? convertImportedComponents(importData.components, sections, effectiveFrameWidth)

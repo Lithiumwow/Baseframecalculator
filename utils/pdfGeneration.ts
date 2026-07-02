@@ -3,7 +3,8 @@ import type { Load, Section, Results } from "../types"
 import type { MaterialProperties } from "../types"
 import { standardMaterials } from "../constants"
 import { svgToPngDataUrl } from "./svgToPng"
-import { getLoadMagnitudeInN } from "./conversions"
+import { getLoadMagnitudeInN, getDistributedLoadTotalWeightN } from "./conversions"
+import type { COGResult } from "./cogCalculation"
 
 interface PDFGenerationParams {
   analysisType: "Simple Beam" | "Base Frame"
@@ -18,6 +19,7 @@ interface PDFGenerationParams {
   loads: Load[]
   sections: Section[]
   results: Results
+  cogResult?: COGResult
 }
 
 export async function generatePDF(params: PDFGenerationParams): Promise<void> {
@@ -34,6 +36,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     loads,
     sections,
     results,
+    cogResult,
   } = params
 
   // Initial wait to ensure page is fully loaded
@@ -144,6 +147,34 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     return startY + rowHeight * (rows.length + 1) + 10
   }
 
+  /** Size diagrams to fill page width; shrink height if needed to fit remaining space */
+  const computeDiagramSize = (origWidth: number, origHeight: number, yPos: number) => {
+    const aspect = origHeight / origWidth
+    let diagramWidth = contentWidth * 0.95
+    let diagramHeight = diagramWidth * aspect
+    const maxHeight = pageHeight - yPos - 45
+    if (diagramHeight > maxHeight && maxHeight > 40) {
+      diagramHeight = maxHeight
+      diagramWidth = diagramHeight / aspect
+    }
+    return { width: diagramWidth, height: diagramHeight }
+  }
+
+  const embedDiagramImage = (
+    img: string,
+    origWidth: number,
+    origHeight: number,
+    yPos: number,
+  ): { y: number; width: number; height: number } => {
+    const { width: diagramWidth, height: diagramHeight } = computeDiagramSize(origWidth, origHeight, yPos)
+    const diagramX = (pageWidth - diagramWidth) / 2
+    pdf.setDrawColor(0, 0, 0)
+    pdf.setLineWidth(0.5)
+    pdf.rect(diagramX - 3, yPos - 3, diagramWidth + 6, diagramHeight + 6)
+    pdf.addImage(img, "PNG", diagramX, yPos, diagramWidth, diagramHeight)
+    return { y: yPos + diagramHeight + 12, width: diagramWidth, height: diagramHeight }
+  }
+
   // Helper to capture a DOM node as PNG using svgToPngDataUrl
   const captureSVGAsImage = async (svgId: string, fallbackWidth: number, fallbackHeight: number) => {
     // Wait a bit for any pending renders
@@ -209,19 +240,10 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     void svg.getBoundingClientRect()
     await new Promise(resolve => setTimeout(resolve, 300))
     
-    const rect = svg.getBoundingClientRect()
-    console.log(`SVG ${svgId} dimensions:`, { 
-      rect: { width: rect.width, height: rect.height },
-      attributes: { 
-        width: svg.getAttribute('width'), 
-        height: svg.getAttribute('height') 
-      }
-    })
-    
-    // Get dimensions from SVG attributes first, then from bounding rect
+    // Prefer explicit SVG attributes for capture resolution (CSS scaling can distort)
     let width = fallbackWidth
     let height = fallbackHeight
-    
+
     if (svg.hasAttribute("width")) {
       const attrWidth = Number(svg.getAttribute("width"))
       if (!isNaN(attrWidth) && attrWidth > 0) width = attrWidth
@@ -230,18 +252,15 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
       const attrHeight = Number(svg.getAttribute("height"))
       if (!isNaN(attrHeight) && attrHeight > 0) height = attrHeight
     }
-    
-    // Use bounding rect if it has valid dimensions (prefer actual rendered size)
-    if (rect.width > 0 && rect.height > 0) {
-      width = rect.width
-      height = rect.height
+
+    if (width <= 0 || height <= 0) {
+      const rect = svg.getBoundingClientRect()
+      if (rect.width > 0) width = rect.width
+      if (rect.height > 0) height = rect.height
     }
-    
-    // Ensure minimum dimensions
+
     if (width <= 0) width = fallbackWidth
     if (height <= 0) height = fallbackHeight
-    
-    console.log(`Capturing SVG ${svgId} at ${width}x${height}`)
     
     try {
       const dataUrl = await svgToPngDataUrl(svg, width, height)
@@ -363,15 +382,18 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     let loadType = load.type
 
     if (load.type === "Distributed Load") {
+      loadValue = getDistributedLoadTotalWeightN(load)
       if (analysisType === "Base Frame" && load.loadLength && load.loadWidth) {
-        const loadArea = (load.loadLength * load.loadWidth) / 1_000_000
-        loadValue = load.magnitude * loadArea
-        loadDescription = `${load.loadLength} mm × ${load.loadWidth} mm`
+        loadDescription = `${load.loadLength} mm x ${load.loadWidth} mm`
+        if (load.unit === "lbs" || load.unit === "kg") {
+          loadType = `Distributed (${load.magnitude} ${load.unit})`
+        } else {
+          loadType = `Distributed (${load.magnitude} N/m2)`
+        }
       } else if (load.area) {
-        loadValue = load.magnitude * load.area
-        loadDescription = `${load.area} m²`
+        loadDescription = `${load.area} m2`
+        loadType = `Distributed (${load.magnitude} N/m2)`
       }
-      loadType = `Distributed (${load.magnitude} N/m²)`
     } else if (load.type === "Uniform Load" && load.endPosition) {
       const loadLength = (load.endPosition - load.startPosition) / 1000
       loadValue = load.magnitude * loadLength
@@ -441,6 +463,34 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     7
   )
 
+  if (analysisType === "Base Frame" && cogResult) {
+    if (yOffset + 40 > pageHeight - 60) {
+      pdf.addPage()
+      yOffset = 40
+    }
+    yOffset += 5
+    yOffset = addSubsectionHeader("Center of Gravity (COG)", margin, yOffset)
+    yOffset += 5
+
+    const cogData: string[][] = [
+      ["COG X (length)", `${cogResult.cogX.toFixed(0)} mm`, `${(cogResult.cogXRatio * 100).toFixed(1)}%`],
+      ["COG Y (width)", `${cogResult.cogY.toFixed(0)} mm`, `${(cogResult.cogYRatio * 100).toFixed(1)}%`],
+      [
+        "Total weight (COG basis)",
+        `${cogResult.totalWeight.toFixed(1)} ${cogResult.totalWeightUnit}`,
+        "-",
+      ],
+    ]
+    yOffset = addTable(
+      ["Parameter", "Value", "Ratio / Unit"],
+      cogData,
+      margin,
+      yOffset,
+      [contentWidth * 0.45, contentWidth * 0.35, contentWidth * 0.2],
+      7,
+    )
+  }
+
   // Corner reactions table for Base Frame
   if (analysisType === "Base Frame" && results.cornerReactions) {
     if (yOffset + 50 > pageHeight - 60) {
@@ -455,13 +505,13 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     // Format corner reactions with proper labels
     const cornerData: string[][] = [
       [
-        `R₁ (Top-Left): ${results.cornerReactions.R1.toFixed(1)} N`,
-        `R₂ (Top-Right): ${results.cornerReactions.R2.toFixed(1)} N`
+        `R1 (Top-Left): ${results.cornerReactions.R1.toFixed(1)} N`,
+        `R2 (Top-Right): ${results.cornerReactions.R2.toFixed(1)} N`,
       ],
       [
-        `R₃ (Bottom-Left): ${results.cornerReactions.R3.toFixed(1)} N`,
-        `R₄ (Bottom-Right): ${results.cornerReactions.R4.toFixed(1)} N`
-      ]
+        `R3 (Bottom-Left): ${results.cornerReactions.R3.toFixed(1)} N`,
+        `R4 (Bottom-Right): ${results.cornerReactions.R4.toFixed(1)} N`,
+      ],
     ]
     
     // Use 2 columns instead of 4 to fit better
@@ -536,7 +586,6 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
         yOffset = addWrappedText("[Beam Structure Diagram - Not found in DOM. Please ensure the diagram is visible before generating PDF.]", margin, yOffset, contentWidth, 6, 9)
         yOffset += 10
       } else {
-        // Use the improved capture function
         const origWidth = svg.hasAttribute("width") ? Number(svg.getAttribute("width")) : 500
         const origHeight = svg.hasAttribute("height") ? Number(svg.getAttribute("height")) : 250
         structureImg = await captureSVGAsImage("beam-structure-diagram", origWidth, origHeight)
@@ -544,28 +593,11 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
           yOffset = addWrappedText("[Beam Structure Diagram - Unable to capture]", margin, yOffset, contentWidth, 6, 9)
           yOffset += 10
         } else {
-          const aspect = origHeight / origWidth
-          const maxDiagramWidth = contentWidth * 0.9
-          const diagramWidth = Math.min(maxDiagramWidth, 160)
-          const diagramHeight = Math.round(diagramWidth * aspect)
-          // Ensure diagram fits on page
-          if (yOffset + diagramHeight > pageHeight - 40) {
+          if (yOffset + 80 > pageHeight - 40) {
             pdf.addPage()
             yOffset = 40
           }
-          const diagramX = (pageWidth - diagramWidth) / 2
-          pdf.setDrawColor(0, 0, 0)
-          pdf.setLineWidth(0.5)
-          pdf.rect(diagramX - 3, yOffset - 3, diagramWidth + 6, diagramHeight + 6)
-          try {
-            pdf.addImage(structureImg, "PNG", diagramX, yOffset, diagramWidth, diagramHeight)
-          } catch (error) {
-            console.warn("Failed to add structure image to PDF:", error)
-            const fallbackWidth = diagramWidth * 0.8
-            const fallbackHeight = diagramHeight * 0.8
-            pdf.addImage(structureImg, "PNG", (pageWidth - fallbackWidth) / 2, yOffset, fallbackWidth, fallbackHeight)
-          }
-          yOffset += diagramHeight + 12
+          yOffset = embedDiagramImage(structureImg, origWidth, origHeight, yOffset).y
         }
       }
     } else {
@@ -594,28 +626,11 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
           yOffset = addWrappedText("[Frame Structure Diagram - Unable to capture]", margin, yOffset, contentWidth, 6, 9)
           yOffset += 10
         } else {
-          const aspect = origHeight / origWidth
-          const maxDiagramWidth = contentWidth * 0.9
-          const diagramWidth = Math.min(maxDiagramWidth, 160)
-          const diagramHeight = Math.round(diagramWidth * aspect)
-          // Ensure diagram fits on page
-          if (yOffset + diagramHeight > pageHeight - 40) {
+          if (yOffset + 80 > pageHeight - 40) {
             pdf.addPage()
             yOffset = 40
           }
-          const diagramX = (pageWidth - diagramWidth) / 2
-          pdf.setDrawColor(0, 0, 0)
-          pdf.setLineWidth(0.5)
-          pdf.rect(diagramX - 3, yOffset - 3, diagramWidth + 6, diagramHeight + 6)
-          try {
-            pdf.addImage(structureImg, "PNG", diagramX, yOffset, diagramWidth, diagramHeight)
-          } catch (error) {
-            console.warn("Failed to add frame structure image to PDF:", error)
-            const fallbackWidth = diagramWidth * 0.8
-            const fallbackHeight = diagramHeight * 0.8
-            pdf.addImage(structureImg, "PNG", (pageWidth - fallbackWidth) / 2, yOffset, fallbackWidth, fallbackHeight)
-          }
-          yOffset += diagramHeight + 12
+          yOffset = embedDiagramImage(structureImg, origWidth, origHeight, yOffset).y
         }
       }
     }
@@ -645,14 +660,9 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
         yOffset = addWrappedText("[Corner Loads Diagram - Not found in DOM. Please ensure the diagram is visible before generating PDF.]", margin, yOffset, contentWidth, 6, 9)
         yOffset += 10
       } else {
-        // Use the improved capture function
         const origWidth = svg.hasAttribute("width") ? Number(svg.getAttribute("width")) : 700
         const origHeight = svg.hasAttribute("height") ? Number(svg.getAttribute("height")) : 520
-        const aspect = origHeight / origWidth
-        const maxDiagramWidth = contentWidth * 0.9
-        const diagramWidth = Math.min(maxDiagramWidth, 160)
-        const diagramHeight = Math.round(diagramWidth * aspect)
-        const requiredHeight = diagramHeight + 20
+        const requiredHeight = (contentWidth * 0.95 * origHeight) / origWidth + 30
         if (yOffset + requiredHeight > pageHeight - 40) {
           pdf.addPage()
           yOffset = 40
@@ -661,19 +671,7 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
         yOffset += 8
         const cornerImg = await captureSVGAsImage("corner-loads-diagram", origWidth, origHeight)
         if (cornerImg) {
-          const diagramX = (pageWidth - diagramWidth) / 2
-          pdf.setDrawColor(0, 0, 0)
-          pdf.setLineWidth(0.5)
-          pdf.rect(diagramX - 3, yOffset - 3, diagramWidth + 6, diagramHeight + 6)
-          try {
-            pdf.addImage(cornerImg, "PNG", diagramX, yOffset, diagramWidth, diagramHeight)
-          } catch (error) {
-            console.warn("Failed to add corner loads image to PDF:", error)
-            const fallbackWidth = diagramWidth * 0.8
-            const fallbackHeight = diagramHeight * 0.8
-            pdf.addImage(cornerImg, "PNG", (pageWidth - fallbackWidth) / 2, yOffset, fallbackWidth, fallbackHeight)
-          }
-          yOffset += diagramHeight + 12
+          yOffset = embedDiagramImage(cornerImg, origWidth, origHeight, yOffset).y
         } else {
           yOffset = addWrappedText("[Corner Loads Diagram - Unable to capture]", margin, yOffset, contentWidth, 6, 9)
           yOffset += 10
@@ -699,75 +697,33 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     try {
       const container = document.getElementById(diagramId)
       if (!container) throw new Error(`${title} container not found in DOM`)
-      container.scrollIntoView({ behavior: 'instant', block: 'center' })
+      container.scrollIntoView({ behavior: "instant", block: "center" })
       await new Promise(resolve => setTimeout(resolve, 800))
-      const svg = container.querySelector("svg") as SVGSVGElement | null
-      if (!svg) {
-        const nestedSvg = container.querySelector("div > svg") as SVGSVGElement | null
-        if (!nestedSvg) throw new Error(`${title} SVG not found in DOM`)
-        const rect = nestedSvg.getBoundingClientRect()
-        const origWidth = rect.width > 0 ? rect.width : 1248
-        const origHeight = rect.height > 0 ? rect.height : 300
-        const aspect = origHeight / origWidth
-        const maxDiagramWidth = contentWidth * 0.9
-        const diagramWidth = Math.min(maxDiagramWidth, 160)
-        const diagramHeight = Math.round(diagramWidth * aspect)
-        // Check if diagram fits on page
-        if (yPos + diagramHeight > pageHeight - 40) {
-          pdf.addPage()
-          yPos = 40
-          yPos = addSubsectionHeader(title, margin, yPos)
-          yPos += 8
-        }
-        const diagramX = (pageWidth - diagramWidth) / 2
-        const img = await svgToPngDataUrl(nestedSvg, origWidth, origHeight)
-        if (!img || img.length === 0) throw new Error("Failed to convert SVG to PNG")
-        pdf.setDrawColor(0, 0, 0)
-        pdf.setLineWidth(0.5)
-        pdf.rect(diagramX - 3, yPos - 3, diagramWidth + 6, diagramHeight + 6)
-        try {
-          pdf.addImage(img, "PNG", diagramX, yPos, diagramWidth, diagramHeight)
-        } catch (error) {
-          console.warn("Failed to add diagram image to PDF:", error)
-          const fallbackWidth = diagramWidth * 0.8
-          const fallbackHeight = diagramHeight * 0.8
-          pdf.addImage(img, "PNG", (pageWidth - fallbackWidth) / 2, yPos, fallbackWidth, fallbackHeight)
-        }
-        return yPos + diagramHeight + 15
-      } else {
-        const rect = svg.getBoundingClientRect()
-        const origWidth = rect.width > 0 ? rect.width : (svg.hasAttribute("width") ? Number(svg.getAttribute("width")) : 1248)
-        const origHeight = rect.height > 0 ? rect.height : (svg.hasAttribute("height") ? Number(svg.getAttribute("height")) : 300)
-        const aspect = origHeight / origWidth
-        const maxDiagramWidth = contentWidth * 0.9
-        const diagramWidth = Math.min(maxDiagramWidth, 160)
-        const diagramHeight = Math.round(diagramWidth * aspect)
-        // Check if diagram fits on page
-        if (yPos + diagramHeight > pageHeight - 40) {
-          pdf.addPage()
-          yPos = 40
-          yPos = addSubsectionHeader(title, margin, yPos)
-          yPos += 8
-        }
-        const diagramX = (pageWidth - diagramWidth) / 2
-        const img = await svgToPngDataUrl(svg, origWidth, origHeight)
-        if (!img || img.length === 0) throw new Error("Failed to convert SVG to PNG")
-        pdf.setDrawColor(0, 0, 0)
-        pdf.setLineWidth(0.5)
-        pdf.rect(diagramX - 3, yPos - 3, diagramWidth + 6, diagramHeight + 6)
-        try {
-          pdf.addImage(img, "PNG", diagramX, yPos, diagramWidth, diagramHeight)
-        } catch (error) {
-          console.warn("Failed to add diagram image to PDF:", error)
-          const fallbackWidth = diagramWidth * 0.8
-          const fallbackHeight = diagramHeight * 0.8
-          pdf.addImage(img, "PNG", (pageWidth - fallbackWidth) / 2, yPos, fallbackWidth, fallbackHeight)
-        }
-        return yPos + diagramHeight + 15
+      const svg =
+        (container.querySelector("svg") as SVGSVGElement | null) ||
+        (container.querySelector("div > svg") as SVGSVGElement | null)
+      if (!svg) throw new Error(`${title} SVG not found in DOM`)
+
+      const origWidth = svg.hasAttribute("width")
+        ? Number(svg.getAttribute("width"))
+        : svg.getBoundingClientRect().width || 1248
+      const origHeight = svg.hasAttribute("height")
+        ? Number(svg.getAttribute("height"))
+        : svg.getBoundingClientRect().height || 300
+
+      if (yPos + 80 > pageHeight - 40) {
+        pdf.addPage()
+        yPos = 40
+        yPos = addSubsectionHeader(title, margin, yPos)
+        yPos += 8
       }
+
+      const img = await svgToPngDataUrl(svg, origWidth, origHeight)
+      if (!img || img.length === 0) throw new Error("Failed to convert SVG to PNG")
+      return embedDiagramImage(img, origWidth, origHeight, yPos).y + 3
     } catch (err) {
       console.error(`Error capturing ${title}:`, err)
-      return addWrappedText(`[${title} Error: ${err instanceof Error ? err.message : 'Could not be captured'}]`, margin, yPos, contentWidth, 6, 9) + 10
+      return addWrappedText(`[${title} Error: ${err instanceof Error ? err.message : "Could not be captured"}]`, margin, yPos, contentWidth, 6, 9) + 10
     }
   }
 

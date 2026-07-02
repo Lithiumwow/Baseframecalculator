@@ -13,7 +13,10 @@ export async function svgToPngDataUrl(svg: SVGSVGElement, width: number, height:
         ? parseFloat(svg.getAttribute('height')!) 
         : svg.viewBox?.baseVal?.height || height;
       
-      // Ensure cloned SVG has explicit width and height for proper rendering
+      // Ensure cloned SVG has explicit dimensions and xmlns for blob rendering
+      if (!clonedSvg.getAttribute("xmlns")) {
+        clonedSvg.setAttribute("xmlns", "http://www.w3.org/2000/svg")
+      }
       if (!clonedSvg.hasAttribute('width')) {
         clonedSvg.setAttribute('width', svgWidth.toString());
       }
@@ -67,6 +70,10 @@ export async function svgToPngDataUrl(svg: SVGSVGElement, width: number, height:
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
           
+          // White background so transparent SVGs render in PDF
+          ctx.fillStyle = "#ffffff"
+          ctx.fillRect(0, 0, width, height)
+
           // Scale the context and draw the image
           ctx.scale(scale, scale);
           ctx.drawImage(img, 0, 0, width, height);

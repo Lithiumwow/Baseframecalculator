@@ -8,9 +8,19 @@ interface FrameDiagramProps {
   frameWidth: number
   loads: Load[]
   sections?: Section[]
+  /** Center of gravity (mm from frame origin) */
+  cogX?: number
+  cogY?: number
 }
 
-export const FrameDiagram: React.FC<FrameDiagramProps> = ({ frameLength, frameWidth, loads, sections = [] }) => {
+export const FrameDiagram: React.FC<FrameDiagramProps> = ({
+  frameLength,
+  frameWidth,
+  loads,
+  sections = [],
+  cogX,
+  cogY,
+}) => {
   const svgWidth = 500
   const svgHeight = 450
   const margin = 60
@@ -276,6 +286,76 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({ frameLength, frameWi
           <polygon points="0 0, 10 3.5, 0 7" fill="red" />
         </marker>
       </defs>
+
+      {/* COG / COM marker */}
+      {cogX != null &&
+        cogY != null &&
+        cogX >= 0 &&
+        cogY >= 0 &&
+        cogX <= validFrameLength &&
+        cogY <= validFrameWidth && (
+          <g id="cog-marker">
+            <line
+              x1={margin + cogX * scaleX}
+              y1={frameRect.y}
+              x2={margin + cogX * scaleX}
+              y2={frameRect.y + frameRect.height}
+              stroke="#7c3aed"
+              strokeWidth="1.5"
+              strokeDasharray="6,4"
+              opacity={0.85}
+            />
+            <line
+              x1={margin}
+              y1={margin + 30 + cogY * scaleY}
+              x2={margin + frameRect.width}
+              y2={margin + 30 + cogY * scaleY}
+              stroke="#7c3aed"
+              strokeWidth="1.5"
+              strokeDasharray="6,4"
+              opacity={0.85}
+            />
+            <circle
+              cx={margin + cogX * scaleX}
+              cy={margin + 30 + cogY * scaleY}
+              r={9}
+              fill="#7c3aed"
+              stroke="white"
+              strokeWidth="2.5"
+            />
+            <circle
+              cx={margin + cogX * scaleX}
+              cy={margin + 30 + cogY * scaleY}
+              r={3}
+              fill="white"
+            />
+            <text
+              x={margin + cogX * scaleX + 14}
+              y={margin + 30 + cogY * scaleY - 10}
+              fontSize="11"
+              fill="#5b21b6"
+              fontWeight="bold"
+            >
+              COG
+            </text>
+            <text
+              x={margin + cogX * scaleX + 14}
+              y={margin + 30 + cogY * scaleY + 4}
+              fontSize="9"
+              fill="#5b21b6"
+            >
+              X {cogX.toFixed(0)} mm
+            </text>
+            <text
+              x={margin + cogX * scaleX + 14}
+              y={margin + 30 + cogY * scaleY + 16}
+              fontSize="9"
+              fill="#5b21b6"
+            >
+              Y {cogY.toFixed(0)} mm
+            </text>
+          </g>
+        )}
 
       {/* Labels */}
       <text x={svgWidth / 2} y={svgHeight - 15} textAnchor="middle" fontSize="12">

@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts"
 import Head from "next/head"
-import { Download, Loader2, Calculator, Mail, BarChart3, Ruler, Package, Tag, Info } from "lucide-react"
+import { Download, Loader2, Calculator, Mail, BarChart3, Ruler, Package, Tag, Info, RotateCcw } from "lucide-react"
 
 // Import from modules
 import type { Load, Section, Results } from "./types"
@@ -25,6 +25,13 @@ import { useBeamCalculations } from "./hooks/useBeamCalculations"
 import { useDiagramCalculations } from "./hooks/useDiagramCalculations"
 import { generatePDF } from "./utils/pdfGeneration"
 import { generateLaTeX, downloadLaTeX } from "./utils/latexGeneration"
+import {
+  CALCULATOR_STORAGE_KEY,
+  DEFAULT_CALCULATOR_VALUES,
+  DEFAULT_SIMPLE_BEAM_LOADS,
+  getDefaultBaseFrameLoads,
+  clearCalculatorStorage,
+} from "./utils/calculatorDefaults"
 
 // All components are now imported from modules - no local definitions needed
 
@@ -71,6 +78,84 @@ export default function BeamLoadCalculator() {
   })
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
   const [cogResult, setCogResult] = useState<COGResult | null>(null)
+
+  const resetCalculator = (keepAnalysisType = true) => {
+    const defaults = DEFAULT_CALCULATOR_VALUES
+    const nextAnalysisType = keepAnalysisType ? analysisType : defaults.analysisType
+
+    setAnalysisType(nextAnalysisType)
+    setBeamType(defaults.beamType)
+    setBeamCrossSection(defaults.beamCrossSection)
+    setBeamLength(defaults.beamLength)
+    setFrameLength(defaults.frameLength)
+    setFrameWidth(defaults.frameWidth)
+    setLeftSupport(defaults.leftSupport)
+    setRightSupport(defaults.rightSupport)
+    setMaterial(defaults.material)
+    setCustomMaterial({ ...defaults.customMaterial })
+    setWidth(defaults.width)
+    setHeight(defaults.height)
+    setFlangeWidth(defaults.flangeWidth)
+    setFlangeThickness(defaults.flangeThickness)
+    setWebThickness(defaults.webThickness)
+    setDiameter(defaults.diameter)
+    setBeamDensity(defaults.beamDensity)
+    setFrameWeight(0)
+    setTotalRoofWeight(defaults.totalRoofWeight)
+    setTotalRoofWeightUnit(defaults.totalRoofWeightUnit)
+    setSections([])
+    setCogResult(null)
+    setLoads(
+      nextAnalysisType === "Base Frame"
+        ? getDefaultBaseFrameLoads(defaults.frameWidth)
+        : DEFAULT_SIMPLE_BEAM_LOADS,
+    )
+    clearCalculatorStorage()
+  }
+
+  const handleReset = () => {
+    if (!window.confirm("Reset the calculator? All sections, loads, and saved settings will be cleared.")) {
+      return
+    }
+    resetCalculator(true)
+  }
+
+  const applyWeightImport = (result: WeightImportResult) => {
+    resetCalculator(true)
+    if (result.frameLength) setFrameLength(result.frameLength)
+    if (result.frameWidth) setFrameWidth(result.frameWidth)
+    if (result.totalRoofWeight !== undefined && result.totalRoofWeight > 0) {
+      setTotalRoofWeight(result.totalRoofWeight)
+      if (result.totalRoofWeightUnit) {
+        setTotalRoofWeightUnit(result.totalRoofWeightUnit)
+      }
+    } else {
+      setTotalRoofWeight(0)
+    }
+    setSections(result.sections)
+    setLoads(result.loads)
+    if (result.cog) {
+      setCogResult(result.cog)
+    } else {
+      const fl = result.frameLength || frameLength
+      const fw = result.frameWidth || frameWidth
+      setCogResult(
+        calculateCOG(
+          buildCOGItemsFromImport(
+            result.sections,
+            result.loads,
+            fw,
+            result.totalRoofWeight,
+            result.totalRoofWeightUnit,
+            undefined,
+          ),
+          fl,
+          fw,
+          result.totalRoofWeightUnit || "lbs",
+        ),
+      )
+    }
+  }
 
   // Use calculation hooks
   const { calculateResults } = useBeamCalculations({
@@ -274,7 +359,7 @@ export default function BeamLoadCalculator() {
   // Load state from localStorage on mount
   useEffect(() => {
     try {
-      const savedState = localStorage.getItem("beamLoadCalculatorState")
+      const savedState = localStorage.getItem(CALCULATOR_STORAGE_KEY)
       if (savedState) {
         const state = JSON.parse(savedState)
         if (state.analysisType) setAnalysisType(state.analysisType)
@@ -328,7 +413,7 @@ export default function BeamLoadCalculator() {
         totalRoofWeight,
         totalRoofWeightUnit,
       }
-      localStorage.setItem("beamLoadCalculatorState", JSON.stringify(stateToSave))
+      localStorage.setItem(CALCULATOR_STORAGE_KEY, JSON.stringify(stateToSave))
     } catch (error) {
       console.error("Failed to save state to localStorage:", error)
     }
@@ -390,6 +475,21 @@ export default function BeamLoadCalculator() {
     calculateDiagrams()
   }, [calculateResults, calculateDiagrams])
 
+  // Keep COG updated from current sections + loads (Base Frame)
+  useEffect(() => {
+    if (analysisType !== "Base Frame" || sections.length === 0 || frameLength <= 0) {
+      return
+    }
+    const items = buildCOGItemsFromImport(
+      sections,
+      loads,
+      frameWidth,
+      totalRoofWeight > 0 ? totalRoofWeight : undefined,
+      totalRoofWeightUnit
+    )
+    setCogResult(calculateCOG(items, frameLength, frameWidth, totalRoofWeightUnit || "lbs"))
+  }, [analysisType, sections, loads, frameLength, frameWidth, totalRoofWeight, totalRoofWeightUnit])
+
   const handleDownloadPDF = async () => {
     setIsGeneratingPDF(true)
     try {
@@ -406,6 +506,7 @@ export default function BeamLoadCalculator() {
         loads,
         sections,
         results,
+        cogResult: cogResult ?? undefined,
       })
     } catch (error) {
       console.error("Error generating PDF:", error)
@@ -439,11 +540,10 @@ export default function BeamLoadCalculator() {
     }
   }
   return (
-    <div className="container mx-auto p-4 bg-gradient-to-br from-slate-50 to-blue-50 min-h-screen" style={{ fontFamily: '"Inter", "Segoe UI", system-ui, sans-serif' }}>
+    <div className="container mx-auto p-4 bg-gradient-to-br from-slate-50 to-blue-50 min-h-screen font-sans">
       <Head>
         <title>Enhanced Load Calculator</title>
         <link rel="icon" href="/placeholder-logo.png" />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
       </Head>
       
       {/* Header */}
@@ -466,6 +566,16 @@ export default function BeamLoadCalculator() {
             <Mail className="w-4 h-4" />
             <span className="text-sm font-medium hidden sm:inline">hbradroc@uwo.ca</span>
           </a>
+          <Button
+            onClick={handleReset}
+            size="sm"
+            variant="outline"
+            className="flex items-center gap-2"
+            title="Clear all sections, loads, and saved settings"
+          >
+            <RotateCcw className="w-4 h-4" />
+            Reset
+          </Button>
           <Button 
             onClick={handleDownloadPDF} 
             disabled={isGeneratingPDF} 
@@ -696,45 +806,9 @@ export default function BeamLoadCalculator() {
                 </span>
                 <div className="flex gap-2">
                   <WeightImportDialog
-                    onImport={(result: WeightImportResult) => {
-                      if (result.frameLength) setFrameLength(result.frameLength)
-                      if (result.frameWidth) setFrameWidth(result.frameWidth)
-                      if (result.totalRoofWeight !== undefined && result.totalRoofWeight > 0) {
-                        setTotalRoofWeight(result.totalRoofWeight)
-                        if (result.totalRoofWeightUnit) {
-                          setTotalRoofWeightUnit(result.totalRoofWeightUnit)
-                        }
-                      } else {
-                        setTotalRoofWeight(0)
-                      }
-                      setSections(result.sections)
-                      setLoads(result.loads)
-                      if (result.cog) {
-                        setCogResult(result.cog)
-                      } else {
-                        const fl = result.frameLength || frameLength
-                        const fw = result.frameWidth || frameWidth
-                        setCogResult(
-                          calculateCOG(
-                            buildCOGItemsFromImport(
-                              result.sections,
-                              result.loads,
-                              fw,
-                              result.totalRoofWeight,
-                              result.totalRoofWeightUnit,
-                              undefined
-                            ),
-                            fl,
-                            fw,
-                            result.totalRoofWeightUnit || "lbs"
-                          )
-                        )
-                      }
-                    }}
+                    onImport={applyWeightImport}
                     frameLength={frameLength}
                     frameWidth={frameWidth}
-                    existingSections={sections}
-                    existingLoads={loads}
                   />
                   <Button onClick={addSection} variant="outline" size="sm" disabled={sections.length >= 10}>
                     <Package className="w-4 h-4 mr-2" />
@@ -1605,7 +1679,14 @@ export default function BeamLoadCalculator() {
             {analysisType === "Simple Beam" ? (
               <BeamDiagram beamLength={beamLength} leftSupport={leftSupport} rightSupport={rightSupport} loads={loads} />
             ) : (
-              <FrameDiagram frameLength={frameLength} frameWidth={frameWidth} loads={loads} sections={sections} />
+              <FrameDiagram
+                frameLength={frameLength}
+                frameWidth={frameWidth}
+                loads={loads}
+                sections={sections}
+                cogX={cogResult?.cogX}
+                cogY={cogResult?.cogY}
+              />
             )}
           </CardContent>
         </Card>
