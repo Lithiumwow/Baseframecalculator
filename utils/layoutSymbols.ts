@@ -12,6 +12,7 @@
  */
 
 import { defaultLengthInForKind } from "./layoutSegmentDefaults"
+import { INCH_TO_MM } from "./lengthUnits"
 
 export type LayoutComponentType =
   | "fan"
@@ -73,6 +74,12 @@ export function segmentMatchesWeightKind(
   if (weightKind === segmentType) return true
   // Damper sits in the same inlet bay as the filter section
   if (weightKind === "damper" && (segmentType === "filter" || segmentType === "damper"))
+    return true
+  // Pre-heater / electric heat often drawn on the heating-coil bay
+  if (
+    weightKind === "electric_heat" &&
+    (segmentType === "coil" || segmentType === "electric_heat")
+  )
     return true
   if (weightKind === "special" && (segmentType === "special" || segmentType === "inspection"))
     return true
@@ -381,6 +388,76 @@ export interface LayoutDrivenLoadRow {
   loadLengthMm: number
   displayName: string
   weightLb: number
+  sectionIndex?: number
+}
+
+/** True when layout bays are mm side-view segments (e.g. 841 + 1200 + 400 mm). */
+export function isSideViewMmLayout(segments: LayoutSegment[]): boolean {
+  if (segments.length < 3) return false
+  const totalMm = segments.reduce((s, seg) => s + seg.lengthIn * INCH_TO_MM, 0)
+  return totalMm >= 2000 || segments.some((seg) => seg.lengthIn * INCH_TO_MM >= 350)
+}
+
+/** Section index for an absolute position along the frame (mm). */
+export function sectionIndexForPositionMm(
+  absoluteMm: number,
+  sectionLengthsMm: number[]
+): number {
+  let cursor = 0
+  for (let i = 0; i < sectionLengthsMm.length; i++) {
+    cursor += sectionLengthsMm[i]
+    if (absoluteMm < cursor - 0.5) return i
+  }
+  return Math.max(0, sectionLengthsMm.length - 1)
+}
+
+/**
+ * Place loads on the full frame using all layout bays, then map to casing sections.
+ * Used for side-view mm drawings where bays span the entire unit length.
+ */
+export function layoutDrivenLoadPlacementsOnFrame(
+  orderedSections: Array<{ components: Array<{ name: string; weightLb: number }> }>,
+  allSegments: LayoutSegment[],
+  sectionLengthsMm: number[],
+  inchesToMmFn: (inches: number) => number
+): Array<LayoutDrivenLoadRow & { sectionIndex: number }> {
+  const allComponents = orderedSections.flatMap((section) =>
+    weightTableComponentsForLoads(section.components)
+  )
+  const frameLengthMm = allSegments.reduce(
+    (s, seg) => s + inchesToMmFn(seg.lengthIn),
+    0
+  )
+  if (frameLengthMm <= 0 || allSegments.length === 0) return []
+
+  const casingTotalMm = sectionLengthsMm.reduce((a, b) => a + b, 0)
+  const scale = casingTotalMm > 0 ? frameLengthMm / casingTotalMm : 1
+  const scaledSectionLengthsMm = sectionLengthsMm.map((len) => len * scale)
+
+  const sectionStartsMm: number[] = []
+  let cursor = 0
+  for (const len of scaledSectionLengthsMm) {
+    sectionStartsMm.push(cursor)
+    cursor += len
+  }
+
+  const rows = layoutDrivenLoadPlacementsInSection(
+    allComponents,
+    allSegments,
+    frameLengthMm,
+    inchesToMmFn
+  )
+
+  return rows.map((row) => {
+    const centerMm = row.positionMm + row.loadLengthMm / 2
+    const sectionIndex = sectionIndexForPositionMm(centerMm, scaledSectionLengthsMm)
+    const sectionStart = sectionStartsMm[sectionIndex] ?? 0
+    return {
+      ...row,
+      sectionIndex,
+      positionMm: Math.round((row.positionMm - sectionStart) * 10) / 10,
+    }
+  })
 }
 
 /**
@@ -410,7 +487,10 @@ export function layoutDrivenLoadPlacementsInSection(
   let cursorMm = 0
   const rows: LayoutDrivenLoadRow[] = []
 
-  const takeComponent = (seg: LayoutSegment, bayIndex: number): { comp: typeof sectionComponents[0]; idx: number } | null => {
+  const takeComponent = (
+    seg: LayoutSegment,
+    allowFallback: boolean
+  ): { comp: typeof sectionComponents[0]; idx: number } | null => {
     for (let i = 0; i < sectionComponents.length; i++) {
       if (usedComp.has(i)) continue
       const kind = inferKindFromWeightName(sectionComponents[i].name)
@@ -419,6 +499,7 @@ export function layoutDrivenLoadPlacementsInSection(
         return { comp: sectionComponents[i], idx: i }
       }
     }
+    if (!allowFallback || seg.type === "inspection") return null
     for (let i = 0; i < sectionComponents.length; i++) {
       if (!usedComp.has(i)) {
         usedComp.add(i)
@@ -436,8 +517,11 @@ export function layoutDrivenLoadPlacementsInSection(
     loadLengthMm = Math.max(1, Math.min(loadLengthMm, sectionLengthMm - cursorMm))
     if (loadLengthMm <= 0) return
 
-    const matched = takeComponent(seg, bayIndex)
+    const matched = takeComponent(seg, true)
+    if (!matched && seg.type === "inspection") return
+
     const weightLb = matched?.comp.weightLb ?? 0
+    if (!matched && weightLb <= 0) return
 
     let displayName: string
     if (seg.type !== "unknown") {
@@ -456,6 +540,31 @@ export function layoutDrivenLoadPlacementsInSection(
     })
     cursorMm = Math.round((cursorMm + loadLengthMm) * 10) / 10
   })
+
+  // Unmatched components: place sequentially in remaining space
+  const unmatched = sectionComponents.filter((_, i) => !usedComp.has(i))
+  if (unmatched.length > 0 && cursorMm < sectionLengthMm - 0.5) {
+    const remainingMm = sectionLengthMm - cursorMm
+    const synthetic = syntheticSegmentsFromComponents(
+      unmatched,
+      remainingMm / INCH_TO_MM
+    )
+    const tail = sequentialLoadPlacementsInSection(
+      unmatched,
+      synthetic,
+      remainingMm / INCH_TO_MM,
+      remainingMm,
+      inchesToMmFn
+    )
+    tail.forEach((p, i) => {
+      rows.push({
+        positionMm: Math.round((cursorMm + p.positionMm) * 10) / 10,
+        loadLengthMm: p.loadLengthMm,
+        displayName: p.displayName,
+        weightLb: unmatched[i]?.weightLb ?? 0,
+      })
+    })
+  }
 
   return rows
 }

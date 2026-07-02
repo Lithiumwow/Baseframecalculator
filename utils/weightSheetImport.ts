@@ -33,6 +33,8 @@ import {
   weightTableComponentsForLoads,
   sequentialLoadPlacementsInSection,
   layoutDrivenLoadPlacementsInSection,
+  layoutDrivenLoadPlacementsOnFrame,
+  isSideViewMmLayout,
 } from "./layoutSymbols"
 import {
   assignDualDeckBayLoads,
@@ -262,16 +264,53 @@ function assignComponentLoads(
     (layout.componentSegments?.length ?? 0) > 0 ||
     (layout.componentSegmentLengthsIn?.length ?? 0) > 0
 
+  const allLayoutSegments =
+    layout.componentSegments?.length > 0
+      ? layout.componentSegments
+      : layout.componentSegmentLengthsIn.map((lengthIn) => ({
+          lengthIn,
+          type: "unknown" as const,
+        }))
+
+  const useFullFrameMmLayout =
+    hasRealLayout &&
+    isSideViewMmLayout(allLayoutSegments) &&
+    orderedSections.length >= 1
+
+  if (useFullFrameMmLayout) {
+    const sectionLengthsMm = orderedSections.map(
+      (section, idx) =>
+        inchesToMm(resolvedLengthsIn[idx] || section.casingLengthIn)
+    )
+    const framePlacements = layoutDrivenLoadPlacementsOnFrame(
+      orderedSections,
+      allLayoutSegments,
+      sectionLengthsMm,
+      inchesToMm
+    )
+
+    framePlacements.forEach((placement) => {
+      if (placement.loadLengthMm <= 0) return
+      components.push({
+        name: placement.displayName,
+        sectionIndex: placement.sectionIndex,
+        position: placement.positionMm,
+        weight: placement.weightLb,
+        weightUnit,
+        loadType: "Distributed Load",
+        loadLength: Math.round(placement.loadLengthMm),
+        loadWidth: frameWidthMm,
+      })
+    })
+
+    return mergeInletBayLoads(components)
+  }
+
   const sectionSegmentGroups = hasRealLayout
     ? splitSegmentsByCasingSections(
         layout.layoutOrientation === "horizontal" && layout.componentSegments?.length > 0
           ? layout.componentSegments
-          : layout.componentSegments?.length > 0
-            ? layout.componentSegments
-            : layout.componentSegmentLengthsIn.map((lengthIn) => ({
-                lengthIn,
-                type: "unknown" as const,
-              })),
+          : allLayoutSegments,
         casingLengthsIn
       )
     : orderedSections.map((section, idx) =>
@@ -367,12 +406,28 @@ export function buildWeightImportFromSheets(
     0
   )
 
-  const layoutFrameMm = layout.baseframeLengthMm || inchesToMm(weightTable.baseframeLengthIn)
+  const layoutBaySumMm = (layout.componentSegments ?? []).reduce(
+    (sum, seg) => sum + inchesToMm(seg.lengthIn),
+    0
+  )
+
+  const layoutFrameMm =
+    layoutBaySumMm ||
+    layout.baseframeLengthMm ||
+    inchesToMm(weightTable.baseframeLengthIn)
+
   const frameLengthMm =
-    casingTotalMm > 0
-      ? Math.round(casingTotalMm)
-      : layoutFrameMm ||
-        weightTable.casingSections.reduce((s, c) => s + inchesToMm(c.casingLengthIn), 0)
+    layoutBaySumMm > casingTotalMm * 1.02
+      ? Math.round(layoutBaySumMm)
+      : casingTotalMm > 0
+        ? Math.round(casingTotalMm)
+        : Math.round(layoutFrameMm) ||
+          weightTable.casingSections.reduce((s, c) => s + inchesToMm(c.casingLengthIn), 0)
+
+  const sectionLengthScale =
+    casingTotalMm > 0 && layoutBaySumMm > casingTotalMm * 1.02
+      ? layoutBaySumMm / casingTotalMm
+      : 1
 
   const frameWidthMm = getGenioxFrameWidth(genioxType)
   const unit = weightTable.weightUnit
@@ -382,7 +437,8 @@ export function buildWeightImportFromSheets(
   let currentPosition = 0
   const sections: WeightImportSection[] = orderedSections.map((cs, idx) => {
     const lengthIn = resolvedLengthsIn[idx] || cs.casingLengthIn
-    const lengthMm = Math.round(inchesToMm(lengthIn) * 10) / 10
+    const lengthMm =
+      Math.round(inchesToMm(lengthIn) * sectionLengthScale * 10) / 10
     const lengthRatio =
       totalCasingLengthIn > 0 ? lengthIn / totalCasingLengthIn : 1 / orderedSections.length
 

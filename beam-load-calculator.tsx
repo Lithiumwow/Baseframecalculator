@@ -77,6 +77,10 @@ export default function BeamLoadCalculator() {
     cornerReactions: { R1: 0, R2: 0, R3: 0, R4: 0 }, // Individual corner reactions
     maxDeflection: 0,
     totalAppliedLoad: 0,
+    longitudinalBendingMoment: 0,
+    transverseBendingMoment: 0,
+    governingBeamDirection: "longitudinal",
+    governingBeamSpanMm: 0,
   })
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
   const [cogResult, setCogResult] = useState<COGResult | null>(null)
@@ -394,7 +398,6 @@ export default function BeamLoadCalculator() {
         if (state.analysisType) setAnalysisType(state.analysisType)
         if (state.beamLength) setBeamLength(state.beamLength)
         if (state.frameLength) setFrameLength(state.frameLength)
-        if (state.frameWidth) setFrameWidth(state.frameWidth)
         if (state.leftSupport !== undefined) setLeftSupport(state.leftSupport)
         if (state.rightSupport !== undefined) setRightSupport(state.rightSupport)
         if (state.loads) setLoads(state.loads)
@@ -417,6 +420,8 @@ export default function BeamLoadCalculator() {
           if (!Number.isNaN(typeNum)) {
             setFrameWidth(getGenioxFrameWidth(typeNum))
           }
+        } else if (state.frameWidth) {
+          setFrameWidth(state.frameWidth)
         }
       }
     } catch (error) {
@@ -735,7 +740,8 @@ export default function BeamLoadCalculator() {
                   </Select>
                 </div>
                 <p className="text-xs text-gray-500 -mt-2">
-                  Width is set from the Geniox type. Length updates when you import weights or define sections.
+                  Frame width is set from Geniox type ({getGenioxFrameWidth(parseInt(genioxType, 10) || 10)} mm).
+                  Length updates when you import weights or define sections.
                 </p>
                 <div className="grid grid-cols-2 gap-4">
                   <Label htmlFor="frame-length" className="flex items-center gap-2">
@@ -758,9 +764,9 @@ export default function BeamLoadCalculator() {
                   <Input
                     type="number"
                     id="frame-width"
+                    readOnly
                     value={frameWidth}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFrameWidth(validatePositive(Number(e.target.value), 1000))}
-                    className="border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                    className="border-gray-300 bg-gray-50 text-gray-700"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -1713,7 +1719,37 @@ export default function BeamLoadCalculator() {
                   </div>
                 </>
               )}
+              {analysisType === "Base Frame" && results.transverseBendingMoment > 0 && (
+                <>
+                  <div className="text-center p-4 bg-teal-50 rounded-lg border border-teal-200">
+                    <div className="text-2xl font-bold text-teal-700">
+                      {results.transverseBendingMoment.toFixed(0)}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Width-direction beams ({frameWidth} mm span)
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">Transverse Bending Moment (N·m)</div>
+                  </div>
+                  <div className="text-center p-4 bg-slate-50 rounded-lg border border-slate-200">
+                    <div className="text-lg font-bold text-slate-700 capitalize">
+                      {results.governingBeamDirection}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Governing span: {results.governingBeamSpanMm.toFixed(0)} mm
+                    </div>
+                    <div className="text-sm text-gray-600 mt-1">Governing Beam</div>
+                  </div>
+                </>
+              )}
             </div>
+            {analysisType === "Base Frame" && (
+              <p className="text-xs text-gray-500 mt-4 px-1">
+                Max corner reaction and longitudinal stress often stay unchanged when the unit length
+                exceeds width — full-width loads are centered, so width cancels out. Transverse bending
+                moment and COG Y (mm) should change when you switch Geniox type. Re-import weights after
+                changing unit size for correct component weights.
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>

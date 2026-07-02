@@ -43,6 +43,30 @@ function parseDimension(text: string): number | null {
   return null
 }
 
+/** Total unit length (mm) from large bottom-row dimension, e.g. 3482 on Geniox 14 side views. */
+export function extractTotalFrameLengthMm(
+  words: OCRWord[],
+  imageHeight: number,
+  excludeValues: Set<number>
+): number | null {
+  const totals: number[] = []
+
+  for (const word of words) {
+    const val = parseFloat(word.text.replace(/[^\d.]/g, ""))
+    if (isNaN(val) || val < 2400 || val > 4500) continue
+    if (Math.abs(val - Math.round(val)) > 0.01) continue
+    const rounded = Math.round(val)
+    if (excludeValues.has(val) || excludeValues.has(rounded)) continue
+
+    const yCenter = (word.bbox.y0 + word.bbox.y1) / 2
+    if (yCenter < imageHeight * 0.45) continue
+
+    totals.push(rounded)
+  }
+
+  return totals.length > 0 ? Math.max(...totals) : null
+}
+
 /** Component bay lengths in mm from bottom horizontal dimension chain (500, 200, 200, …). */
 export function extractHorizontalBayLengthsMm(
   words: OCRWord[],
@@ -50,7 +74,11 @@ export function extractHorizontalBayLengthsMm(
   imageHeight: number,
   excludeValues: Set<number>
 ): number[] {
-  const sectionTotals = new Set([941, 942, 1440, 1441, 2380, 2382, 2383])
+  const sectionTotals = new Set([
+    941, 942, 1440, 1441, 2380, 2382, 2383,
+    3482, 1700, 1482, 218, 1800, 1370, 1371, 2110, 2112,
+  ])
+  const totalFrameMm = extractTotalFrameLengthMm(words, imageHeight, excludeValues)
   const candidates: Array<{ val: number; x: number }> = []
 
   for (const word of words) {
@@ -80,10 +108,18 @@ export function extractHorizontalBayLengthsMm(
     lastX = c.x
   }
 
-  // Typical AHU: 3–8 component bays summing to section totals
+  // Typical AHU: 3–8 component bays summing to frame or section totals
   if (ordered.length >= 3 && ordered.length <= 12) {
-    const sum = ordered.reduce((a, b) => a + b, 0)
-    if (sum >= 800 && sum <= 2600) return ordered
+    let sum = ordered.reduce((a, b) => a + b, 0)
+    const minSum = totalFrameMm ? Math.round(totalFrameMm * 0.82) : 800
+    const maxSum = totalFrameMm ? Math.round(totalFrameMm * 1.08) : 4500
+
+    if (totalFrameMm && Math.abs(sum - totalFrameMm) <= 250 && sum !== totalFrameMm) {
+      ordered[ordered.length - 1] += totalFrameMm - sum
+      sum = totalFrameMm
+    }
+
+    if (sum >= minSum && sum <= maxSum) return ordered
   }
 
   return []

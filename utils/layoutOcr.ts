@@ -35,9 +35,10 @@ export interface ParsedLayout {
 function findBaseframeLength(valuesIn: number[]): number {
   const candidates = valuesIn.filter((v) => v >= 50 && v <= 400)
   if (candidates.length > 0) return Math.max(...candidates)
-  // mm drawings: total length ~2000–3500 mm → inches
-  const mmTotal = valuesIn.filter((v) => v >= 70 && v <= 140)
-  return mmTotal.length > 0 ? Math.max(...mmTotal) : 0
+  // mm drawings: total length ~2000–4500 mm → inches
+  const mmTotalIn = valuesIn.filter((v) => v >= 78 && v <= 180)
+  if (mmTotalIn.length > 0) return Math.max(...mmTotalIn)
+  return 0
 }
 
 function findCasingSectionLengths(valuesIn: number[], baseframeLength: number): number[] {

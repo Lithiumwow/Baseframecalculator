@@ -47,5 +47,12 @@ export interface Results {
   cornerReactions: { R1: number; R2: number; R3: number; R4: number }
   maxDeflection: number
   totalAppliedLoad: number
+  /** Bending moment in longitudinal (length-direction) perimeter beams */
+  longitudinalBendingMoment: number
+  /** Bending moment in transverse (width-direction) perimeter beams */
+  transverseBendingMoment: number
+  /** Which perimeter beam direction governs stress/deflection */
+  governingBeamDirection: "longitudinal" | "transverse"
+  governingBeamSpanMm: number
 }
 

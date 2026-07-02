@@ -115,6 +115,10 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
     let loadPerBeam = 0
     let cornerReactionForce = 0
     let cornerReactions = { R1: 0, R2: 0, R3: 0, R4: 0 }
+    let longitudinalBendingMoment = 0
+    let transverseBendingMoment = 0
+    let governingBeamDirection: "longitudinal" | "transverse" = "longitudinal"
+    let governingBeamSpanMm = 0
 
     if (analysisType === "Simple Beam") {
       // Single beam analysis
@@ -195,6 +199,10 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
 
         maxBendingMoment = Math.max(maxBendingMoment, Math.abs(moment))
       }
+
+      longitudinalBendingMoment = maxBendingMoment
+      governingBeamDirection = "longitudinal"
+      governingBeamSpanMm = beamLengthM * 1000
     } else {
       // Base frame analysis - Calculate corner reactions based on load positions
       totalBeams = 4
@@ -299,13 +307,12 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
 
         // Convert all section weights to N
         const casingWeightN = convertSectionWeightToN(section.casingWeight, section.casingWeightUnit)
-        const baseframeWeightN = convertSectionWeightToN(section.baseframeWeight || 0, section.baseframeWeightUnit || "kg")
         
         // Calculate roof weight for this section based on total roof weight and section length
         const sectionRoofWeightN = roofWeightPerMM * sectionLengthMM
 
-        // Distribute all section weights (casing + baseframe + roof) to corners using area method
-        const totalSectionLoad = casingWeightN + baseframeWeightN + sectionRoofWeightN
+        // Casing + roof at section centroid; baseframe handled once below as frame self-weight
+        const totalSectionLoad = casingWeightN + sectionRoofWeightN
 
         // Use area method to distribute to corners
         const areaR1 = (frameLengthM - sectionCenterX) * (frameWidthM - sectionCenterY)
@@ -321,50 +328,83 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
           R4 += totalSectionLoad * (areaR4 / totalArea)
         }
 
-        // Add all section weights to totalAppliedLoad
         totalAppliedLoad += casingWeightN
-        totalAppliedLoad += baseframeWeightN
         totalAppliedLoad += sectionRoofWeightN
       })
 
-      // Add frame weight distributed equally to all corners
-      const frameWeightPerCorner = frameWeightN / 4
-      R1 += frameWeightPerCorner
-      R2 += frameWeightPerCorner
-      R3 += frameWeightPerCorner
-      R4 += frameWeightPerCorner
+      // Baseframe steel self-weight: once at section centroids for corners, once in total load
+      if (totalFrameWeightFromSections > 0) {
+        sections.forEach((section) => {
+          const baseframeWeightN = convertSectionWeightToN(
+            section.baseframeWeight || 0,
+            section.baseframeWeightUnit || "kg"
+          )
+          if (baseframeWeightN <= 0) return
 
-      // Add frame weight to total applied load for stress/deflection calculations
+          const sectionStartM = section.startPosition / 1000
+          const sectionEndM = section.endPosition / 1000
+          const sectionCenterX = (sectionStartM + sectionEndM) / 2
+          const sectionCenterY = frameWidthM / 2
+
+          const areaR1 = (frameLengthM - sectionCenterX) * (frameWidthM - sectionCenterY)
+          const areaR2 = sectionCenterX * (frameWidthM - sectionCenterY)
+          const areaR3 = (frameLengthM - sectionCenterX) * sectionCenterY
+          const areaR4 = sectionCenterX * sectionCenterY
+          const totalArea = frameLengthM * frameWidthM
+
+          if (totalArea > 0) {
+            R1 += baseframeWeightN * (areaR1 / totalArea)
+            R2 += baseframeWeightN * (areaR2 / totalArea)
+            R3 += baseframeWeightN * (areaR3 / totalArea)
+            R4 += baseframeWeightN * (areaR4 / totalArea)
+          }
+        })
+      } else {
+        const frameWeightPerCorner = frameWeightN / 4
+        R1 += frameWeightPerCorner
+        R2 += frameWeightPerCorner
+        R3 += frameWeightPerCorner
+        R4 += frameWeightPerCorner
+      }
+
       totalAppliedLoad += frameWeightN
 
-      // Calculate critical beam length (longer of the two sides)
-      const criticalBeamLength = Math.max(frameLengthM, frameWidthM)
+      // Calculate critical beam lengths for both frame directions
+      const longitudinalSpanM = frameLengthM
+      const transverseSpanM = frameWidthM
 
-      // For analysis, use the maximum corner reaction
-      const maxCornerReaction = Math.max(R1, R2, R3, R4)
-      
-      // Calculate equivalent uniform load for critical beam analysis
-      // This is used for stress calculations
-      // Note: Each beam carries 1/4 of the total load
+      // Each of 4 perimeter beams carries ~1/4 of total load (simplified frame model)
       loadPerBeam = totalAppliedLoad / 4
-      const uniformLoadPerMeter = loadPerBeam / criticalBeamLength
-      maxShearForce = (uniformLoadPerMeter * criticalBeamLength) / 2
-      maxBendingMoment = (uniformLoadPerMeter * Math.pow(criticalBeamLength, 2)) / 8
 
-      // Store individual corner reactions
+      const longitudinalBendingMoment =
+        (loadPerBeam / longitudinalSpanM) * Math.pow(longitudinalSpanM, 2) / 8
+      const transverseBendingMoment =
+        (loadPerBeam / transverseSpanM) * Math.pow(transverseSpanM, 2) / 8
+
+      const governingBeamDirection: "longitudinal" | "transverse" =
+        transverseBendingMoment > longitudinalBendingMoment ? "transverse" : "longitudinal"
+      const governingBeamSpanM =
+        governingBeamDirection === "transverse" ? transverseSpanM : longitudinalSpanM
+      const governingBeamSpanMm = governingBeamSpanM * 1000
+
+      maxBendingMoment = Math.max(longitudinalBendingMoment, transverseBendingMoment)
+      maxShearForce = loadPerBeam / 2
+
+      const maxCornerReaction = Math.max(R1, R2, R3, R4)
       cornerReactionForce = maxCornerReaction
       cornerReactions = { R1, R2, R3, R4 }
       
       // Debug logging (can be removed in production)
       if (process.env.NODE_ENV === 'development') {
         console.log('Frame Weight Calculation:', {
-          beamVolume: beamVolume,
-          framePerimeter: framePerimeter,
-          frameVolumeM3: frameVolumeM3,
-          beamDensity: beamDensity,
           frameWeightN: frameWeightN,
           frameWeightKg: frameWeightN / 9.81,
           totalAppliedLoad: totalAppliedLoad,
+          frameWidthM,
+          frameLengthM,
+          longitudinalBendingMoment,
+          transverseBendingMoment,
+          governingBeamDirection,
           cornerReactions: { R1, R2, R3, R4 }
         })
       }
@@ -419,8 +459,17 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
 
     // Calculate deflection
     const E = materialProps.elasticModulus * 1e9 // Convert GPa to Pa
-    const criticalLength = analysisType === "Simple Beam" ? beamLengthM : Math.max(frameLengthM, frameWidthM)
-    const maxDeflection = E > 0 ? (5 * totalAppliedLoad * Math.pow(criticalLength, 4)) / (384 * E * momentOfInertia) : 0
+    let maxDeflection = 0
+    if (analysisType === "Simple Beam") {
+      maxDeflection =
+        E > 0 ? (5 * totalAppliedLoad * Math.pow(beamLengthM, 4)) / (384 * E * momentOfInertia) : 0
+    } else if (E > 0) {
+      const deflectionLong =
+        (5 * loadPerBeam * Math.pow(frameLengthM, 4)) / (384 * E * momentOfInertia)
+      const deflectionTrans =
+        (5 * loadPerBeam * Math.pow(frameWidthM, 4)) / (384 * E * momentOfInertia)
+      maxDeflection = Math.max(deflectionLong, deflectionTrans)
+    }
 
     setResults({
       maxShearForce: Number(maxShearForce.toFixed(2)),
@@ -441,6 +490,10 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
       },
       maxDeflection: Number(maxDeflection.toFixed(6)),
       totalAppliedLoad: Number(totalAppliedLoad.toFixed(2)),
+      longitudinalBendingMoment: Number(longitudinalBendingMoment.toFixed(2)),
+      transverseBendingMoment: Number(transverseBendingMoment.toFixed(2)),
+      governingBeamDirection,
+      governingBeamSpanMm: Number(governingBeamSpanMm.toFixed(1)),
     })
   }, [
     analysisType,
