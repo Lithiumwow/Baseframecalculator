@@ -1,8 +1,11 @@
-function BaseframeCalculatorApp
-%BASEFRAMECALCULATORAPP Interactive GUI for baseframe / beam load analysis.
-%   Run:  BaseframeCalculatorApp
-%   Enter dimensions, section, material, sections table, and loads table,
-%   then click Calculate.
+function baseframe_app
+%BASEFRAME_APP Interactive GUI for baseframe / beam load analysis.
+%
+%   In MATLAB:
+%     cd('<repo>\matlab')
+%     baseframe_app
+%
+%   Filename must be baseframe_app.m (letters, numbers, underscore only).
 
     %% -------------------- App window --------------------
     fig = uifigure("Name", "Baseframe Load Calculator", ...

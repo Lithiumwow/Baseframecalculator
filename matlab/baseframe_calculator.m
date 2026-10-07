@@ -1,4 +1,6 @@
-%% Baseframe / Beam Load Calculator (MATLAB)
+%% Baseframe / Beam Load Calculator (MATLAB) — script version
+% For the editable GUI app instead, run:  baseframe_app
+%
 % Mirrors the web app engineering model:
 %   - Simply-supported beam: point / uniform / distributed loads
 %   - Base frame: 4-corner area-method reactions + COG
