@@ -8,6 +8,7 @@ import type { Load, Section, Results } from "../types"
 import { getDistributedLoadTotalWeightN, getLoadMagnitudeInN } from "../utils/conversions"
 import { buildMomentContour, intensityToRgb } from "../utils/frameContour"
 import type { COGResult } from "../utils/cogCalculation"
+import type { DxfCasingMesh } from "../utils/dxfMeshExtract"
 
 export interface Frame3DViewerProps {
   frameLength: number
@@ -17,7 +18,39 @@ export interface Frame3DViewerProps {
   results: Results
   bendingMomentData: Array<{ x: number; y: number | null }>
   cog?: COGResult | null
+  /** DXF 3DFACE casing mesh (mm, Z-up). When set, replaces flat section boxes. */
+  casingMesh?: DxfCasingMesh | null
   className?: string
+}
+
+/** Convert DXF mm Z-up positions into frame meters (Y-up): X→X, Z→Y, Y→Z. */
+function dxfPositionsToFrameMeters(mesh: DxfCasingMesh, beamH: number): Float32Array {
+  const { positions, bounds } = mesh
+  const out = new Float32Array(positions.length)
+  const s = 0.001
+  for (let i = 0; i < positions.length; i += 3) {
+    out[i] = (positions[i] - bounds.minX) * s
+    out[i + 1] = (positions[i + 2] - bounds.minZ) * s + beamH
+    out[i + 2] = (positions[i + 1] - bounds.minY) * s
+  }
+  return out
+}
+
+function sampleContourIntensity(
+  contour: Array<{ xMm: number; intensity: number }>,
+  xMm: number
+): number {
+  if (!contour.length) return 0.2
+  let best = contour[0]
+  let bestD = Math.abs(best.xMm - xMm)
+  for (let i = 1; i < contour.length; i++) {
+    const d = Math.abs(contour[i].xMm - xMm)
+    if (d < bestD) {
+      best = contour[i]
+      bestD = d
+    }
+  }
+  return best.intensity
 }
 
 const SECTION_TINTS = [0x60a5fa, 0xfbbf24, 0x34d399, 0xf472b6, 0xa78bfa, 0xfb923c]
@@ -108,6 +141,7 @@ export function Frame3DViewer({
   results,
   bendingMomentData,
   cog,
+  casingMesh,
   className,
 }: Frame3DViewerProps) {
   const mountRef = useRef<HTMLDivElement>(null)
@@ -121,13 +155,24 @@ export function Frame3DViewer({
     const W = Math.max(frameWidth, 1) / 1000
     const beamH = 0.08
     const beamT = 0.04
-    const casingH = 0.35
+    const meshH =
+      casingMesh != null
+        ? Math.max(0.15, (casingMesh.bounds.maxZ - casingMesh.bounds.minZ) * 0.001)
+        : 0
+    const meshLen =
+      casingMesh != null ? (casingMesh.bounds.maxX - casingMesh.bounds.minX) * 0.001 : L
+    const meshWid =
+      casingMesh != null ? (casingMesh.bounds.maxY - casingMesh.bounds.minY) * 0.001 : W
+    const casingH = casingMesh != null ? meshH : 0.35
+    const spanX = Math.max(L, meshLen)
+    const spanZ = Math.max(W, meshWid)
     const contentTop = beamH + casingH + 0.55 // include load arrows
     const contentBottom = -0.45 // reactions below
 
-    const center = new THREE.Vector3(L / 2, (contentTop + contentBottom) / 2, W / 2)
-    const size = new THREE.Vector3(L, contentTop - contentBottom, W)
-    const radius = Math.max(size.length() * 0.5, 0.35)
+    // Model built in +X/+Z space, then shifted so its center sits at world origin
+    const modelCenter = new THREE.Vector3(spanX / 2, (contentTop + contentBottom) / 2, spanZ / 2)
+    const size = new THREE.Vector3(spanX, contentTop - contentBottom, spanZ)
+    const radius = Math.max(size.length() * 0.55, 0.4)
 
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0xf3f4f6)
@@ -135,6 +180,9 @@ export function Frame3DViewer({
     const camera = new THREE.PerspectiveCamera(40, 1, 0.05, 500)
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    renderer.domElement.style.width = "100%"
+    renderer.domElement.style.height = "100%"
+    renderer.domElement.style.display = "block"
     mount.appendChild(renderer.domElement)
 
     const controls = new OrbitControls(camera, renderer.domElement)
@@ -142,32 +190,33 @@ export function Frame3DViewer({
     controls.dampingFactor = 0.12
     controls.rotateSpeed = 0.7
     controls.zoomSpeed = 0.85
-    controls.panSpeed = 0.5
+    controls.panSpeed = 0.45
     controls.screenSpacePanning = true
     controls.enablePan = true
-    controls.minDistance = radius * 0.55
-    controls.maxDistance = radius * 4.5
-    controls.maxPolarAngle = Math.PI * 0.49 // stay above ground
+    controls.minDistance = radius * 0.6
+    controls.maxDistance = radius * 5
+    controls.maxPolarAngle = Math.PI * 0.49
     controls.minPolarAngle = 0.08
-    controls.target.copy(center)
-    // Keep orbit target near the model so it doesn't "fly away"
-    const maxPan = radius * 1.25
+    controls.target.set(0, 0, 0)
+    const maxPan = radius * 0.9
     const clampTarget = () => {
-      controls.target.x = THREE.MathUtils.clamp(controls.target.x, center.x - maxPan, center.x + maxPan)
-      controls.target.y = THREE.MathUtils.clamp(controls.target.y, center.y - maxPan * 0.6, center.y + maxPan * 0.6)
-      controls.target.z = THREE.MathUtils.clamp(controls.target.z, center.z - maxPan, center.z + maxPan)
+      controls.target.x = THREE.MathUtils.clamp(controls.target.x, -maxPan, maxPan)
+      controls.target.y = THREE.MathUtils.clamp(controls.target.y, -maxPan * 0.5, maxPan * 0.5)
+      controls.target.z = THREE.MathUtils.clamp(controls.target.z, -maxPan, maxPan)
     }
     controls.addEventListener("change", clampTarget)
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.7))
-    const key = new THREE.DirectionalLight(0xffffff, 0.85)
-    key.position.set(L + 2, L + 2, W + 2)
+    scene.add(new THREE.AmbientLight(0xffffff, 0.75))
+    const key = new THREE.DirectionalLight(0xffffff, 0.9)
+    key.position.set(2.5, 4, 3)
     scene.add(key)
     const fill = new THREE.DirectionalLight(0xffffff, 0.35)
-    fill.position.set(-L, L * 0.5, -W)
+    fill.position.set(-2, 2, -2)
     scene.add(fill)
 
     const root = new THREE.Group()
+    // Center model at origin so Fit / orbit stay framed
+    root.position.set(-modelCenter.x, -modelCenter.y, -modelCenter.z)
     scene.add(root)
 
     const loadPeaks: Array<{ xMm: number; weight: number }> = []
@@ -244,30 +293,82 @@ export function Frame3DViewer({
       root.add(mesh)
     }
 
+    if (casingMesh && casingMesh.positions.length >= 9) {
+      const worldPos = dxfPositionsToFrameMeters(casingMesh, beamH)
+      const colors = new Float32Array(worldPos.length)
+      for (let i = 0; i < worldPos.length; i += 9) {
+        const cxMm = ((worldPos[i] + worldPos[i + 3] + worldPos[i + 6]) / 3) * 1000
+        const intensity = sampleContourIntensity(contour, cxMm)
+        const [r, g, b] = intensityToRgb(intensity)
+        for (let v = 0; v < 3; v++) {
+          const o = i + v * 3
+          colors[o] = r / 255
+          colors[o + 1] = g / 255
+          colors[o + 2] = b / 255
+        }
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute("position", new THREE.BufferAttribute(worldPos, 3))
+      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3))
+      geo.computeVertexNormals()
+      const solid = new THREE.Mesh(
+        geo,
+        new THREE.MeshLambertMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.88,
+        })
+      )
+      const wire = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({
+          color: 0x94a3b8,
+          wireframe: true,
+          transparent: true,
+          opacity: 0.18,
+        })
+      )
+      root.add(solid, wire)
+    } else {
+      sections.forEach((section, index) => {
+        const x0 = section.startPosition / 1000
+        const x1 = section.endPosition / 1000
+        const len = Math.max(0.01, x1 - x0)
+        const midX = (x0 + x1) / 2
+        const mat = new THREE.MeshLambertMaterial({
+          color: SECTION_TINTS[index % SECTION_TINTS.length],
+          transparent: true,
+          opacity: 0.22,
+          depthWrite: false,
+        })
+        const box = new THREE.Mesh(new THREE.BoxGeometry(len * 0.98, casingH, W * 0.92), mat)
+        box.position.set(midX, beamH + casingH / 2, W / 2)
+        root.add(box)
+
+        const edge = new THREE.Mesh(
+          new THREE.BoxGeometry(0.008, casingH * 0.95, W * 0.94),
+          new THREE.MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.35 })
+        )
+        edge.position.set(x0, beamH + casingH / 2, W / 2)
+        root.add(edge)
+      })
+    }
+
     sections.forEach((section, index) => {
       const x0 = section.startPosition / 1000
       const x1 = section.endPosition / 1000
-      const len = Math.max(0.01, x1 - x0)
       const midX = (x0 + x1) / 2
-      const mat = new THREE.MeshLambertMaterial({
-        color: SECTION_TINTS[index % SECTION_TINTS.length],
-        transparent: true,
-        opacity: 0.22,
-        depthWrite: false,
-      })
-      const box = new THREE.Mesh(new THREE.BoxGeometry(len * 0.98, casingH, W * 0.92), mat)
-      box.position.set(midX, beamH + casingH / 2, W / 2)
-      root.add(box)
-
-      const edge = new THREE.Mesh(
-        new THREE.BoxGeometry(0.008, casingH * 0.95, W * 0.94),
-        new THREE.MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.35 })
-      )
-      edge.position.set(x0, beamH + casingH / 2, W / 2)
-      root.add(edge)
-
+      if (casingMesh) {
+        const edge = new THREE.Mesh(
+          new THREE.BoxGeometry(0.01, Math.max(0.12, casingH * 0.85), spanZ * 0.98),
+          new THREE.MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.28 })
+        )
+        edge.position.set(x0, beamH + casingH * 0.45, spanZ / 2)
+        root.add(edge)
+      }
       const label = makeLabelSprite(section.name || `Section ${index + 1}`)
-      label.position.set(midX, beamH + casingH + 0.12, W / 2)
+      label.position.set(midX, beamH + casingH + 0.14, spanZ / 2)
       root.add(label)
     })
 
@@ -304,15 +405,21 @@ export function Frame3DViewer({
       root.add(arrow)
 
       if (footprintLen > 0) {
+        // Distributed-load plan footprint (not DXF geometry)
         const fp = new THREE.Mesh(
           new THREE.BoxGeometry(
             footprintLen / 1000,
-            0.01,
-            Math.min(W * 0.7, (load.loadWidth || frameWidth) / 1000)
+            0.006,
+            Math.min(W * 0.55, (load.loadWidth || frameWidth * 0.6) / 1000)
           ),
-          new THREE.MeshBasicMaterial({ color: 0xf87171, transparent: true, opacity: 0.35 })
+          new THREE.MeshBasicMaterial({
+            color: 0xf87171,
+            transparent: true,
+            opacity: 0.28,
+            depthWrite: false,
+          })
         )
-        fp.position.set(xMm / 1000, beamH + casingH + 0.02, W / 2)
+        fp.position.set(xMm / 1000, beamH + casingH + 0.04, W / 2)
         root.add(fp)
       }
     })
@@ -373,42 +480,55 @@ export function Frame3DViewer({
 
     const fitDistance = () => {
       const fov = THREE.MathUtils.degToRad(camera.fov)
-      const aspect = Math.max(camera.aspect, 0.1)
-      const fitHeightDistance = radius / Math.sin(fov / 2)
-      const fitWidthDistance = radius / Math.sin(fov / 2) / aspect
-      return Math.max(fitHeightDistance, fitWidthDistance) * 1.15
+      const aspect = Math.max(camera.aspect, 0.0001)
+      // Fit bounding sphere to current viewport
+      const distForHeight = radius / Math.tan(fov / 2)
+      const distForWidth = radius / (Math.tan(fov / 2) * aspect)
+      return Math.max(distForHeight, distForWidth) * 1.2
     }
 
     const setView = (direction: THREE.Vector3) => {
-      controls.target.copy(center)
+      controls.target.set(0, 0, 0)
       const dist = THREE.MathUtils.clamp(fitDistance(), controls.minDistance, controls.maxDistance)
       const dir = direction.clone().normalize()
-      camera.position.copy(center).addScaledVector(dir, dist)
+      camera.up.set(0, 1, 0)
+      camera.position.copy(dir.multiplyScalar(dist))
       camera.near = Math.max(0.01, dist / 100)
-      camera.far = Math.max(100, dist * 20)
+      camera.far = Math.max(200, dist * 40)
+      camera.lookAt(0, 0, 0)
       camera.updateProjectionMatrix()
       controls.update()
       clampTarget()
     }
 
     const api: ViewApi = {
-      fit: () => setView(new THREE.Vector3(1, 0.75, 1)),
-      iso: () => setView(new THREE.Vector3(1, 0.85, 1)),
-      front: () => setView(new THREE.Vector3(0, 0.15, 1)),
+      fit: () => setView(new THREE.Vector3(1.1, 0.85, 1.1)),
+      iso: () => setView(new THREE.Vector3(1, 0.9, 1)),
+      front: () => setView(new THREE.Vector3(0.02, 0.2, 1)),
       top: () => setView(new THREE.Vector3(0.001, 1, 0.001)),
     }
     apiRef.current = api
-    api.fit()
 
+    let didInitialFit = false
     const resize = () => {
-      const w = mount.clientWidth || 640
-      const h = mount.clientHeight || 420
+      const w = Math.max(1, mount.clientWidth || 640)
+      const h = Math.max(1, mount.clientHeight || 420)
       camera.aspect = w / h
       camera.updateProjectionMatrix()
       renderer.setSize(w, h, false)
+      if (!didInitialFit && w > 40 && h > 40) {
+        didInitialFit = true
+        api.fit()
+      }
     }
     resize()
-    const ro = new ResizeObserver(resize)
+    // Second pass after layout settles (fixes cornered first paint)
+    requestAnimationFrame(() => {
+      resize()
+      api.fit()
+      didInitialFit = true
+    })
+    const ro = new ResizeObserver(() => resize())
     ro.observe(mount)
 
     let raf = 0
@@ -440,19 +560,34 @@ export function Frame3DViewer({
     results.legSupportPositionsMm,
     bendingMomentData,
     cog,
+    casingMesh,
   ])
 
   const maxMoment = results.maxBendingMoment || 0
   const runView = (name: keyof ViewApi) => apiRef.current?.[name]()
+  const hasMesh = casingMesh != null && casingMesh.triangleCount > 0
 
   return (
     <div className={className}>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <div className="text-sm text-gray-600 max-w-xl">
-          Parametric baseframe: rails colored by bending moment from your loads. Labeled translucent
-          boxes = sections. Red arrows = component loads (down). Amber = casing weight (down). Green
-          pads/arrows = corner <em>support reactions</em> (up) — not lifting lugs
-          {cog ? ". Orange = COG" : ""}.
+          {hasMesh ? (
+            <>
+              DXF casing mesh ({casingMesh!.triangleCount.toLocaleString()} triangles) tinted by
+              bending moment. Rails show the same contour. Red arrows = component loads (down);
+              thin red pad = distributed-load footprint (not DXF). Amber = casing weight. Green =
+              corner <em>support reactions</em> (up)
+              {cog ? ". Orange = COG" : ""}.
+            </>
+          ) : (
+            <>
+              Parametric baseframe: rails colored by bending moment. Translucent boxes = sections
+              (import a Geniox DXF to show the real casing mesh). Red arrows = loads (down); thin
+              red pad = distributed-load footprint. Amber = casing weight. Green = corner{" "}
+              <em>support reactions</em> (up)
+              {cog ? ". Orange = COG" : ""}.
+            </>
+          )}
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex flex-wrap justify-end gap-1.5">
@@ -486,11 +621,11 @@ export function Frame3DViewer({
       </div>
       <div
         ref={mountRef}
-        className="w-full h-[420px] rounded-lg border border-gray-200 overflow-hidden bg-gray-100 touch-none"
+        className="relative w-full h-[480px] rounded-lg border border-gray-200 overflow-hidden bg-gray-100 touch-none"
       />
       <p className="text-xs text-gray-500 mt-2">
-        Drag to orbit · scroll to zoom · right-drag to pan (limited). Use Fit if the model drifts.
-        Contour uses the longitudinal moment diagram from the current analysis.
+        Drag to orbit · scroll to zoom · right-drag to pan (limited). Click <strong>Fit</strong> to
+        re-center. Contour uses the longitudinal moment diagram from the current analysis.
       </p>
     </div>
   )

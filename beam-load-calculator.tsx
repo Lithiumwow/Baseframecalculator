@@ -42,6 +42,7 @@ import {
   clearCalculatorStorage,
 } from "./utils/calculatorDefaults"
 import { GENIOX_TYPES, getGenioxFrameWidth } from "./utils/genioxDimensions"
+import type { DxfCasingMesh } from "./utils/dxfMeshExtract"
 
 const Frame3DViewer = dynamic(
   () => import("./components/Frame3DViewer").then((m) => m.Frame3DViewer),
@@ -68,6 +69,7 @@ export default function BeamLoadCalculator() {
   const [rightSupport, setRightSupport] = useState(1000)
   const [loads, setLoads] = useState<Load[]>([{ type: "Point Load", magnitude: 1000, startPosition: 500, unit: "N" }])
   const [sections, setSections] = useState<Section[]>([])
+  const [casingMesh, setCasingMesh] = useState<DxfCasingMesh | null>(null)
   const [shearForceData, setShearForceData] = useState<Array<{ x: number; y: number | null }>>([])
   const [bendingMomentData, setBendingMomentData] = useState<Array<{ x: number; y: number | null }>>([])
   const [deflectionData, setDeflectionData] = useState<Array<{ x: number; y: number | null }>>([])
@@ -161,6 +163,7 @@ export default function BeamLoadCalculator() {
     setTotalRoofWeightUnit(defaults.totalRoofWeightUnit)
     setGenioxType(defaults.genioxType)
     setSections([])
+    setCasingMesh(null)
     setCogResult(null)
     setUnitTotalLb(0)
     setOtherComponentsWeight(0)
@@ -210,6 +213,9 @@ export default function BeamLoadCalculator() {
     }
     setSections(result.sections)
     setLoads(result.loads)
+    if (result.casingMesh !== undefined) {
+      setCasingMesh(result.casingMesh)
+    }
     if (result.unitTotalLb !== undefined) setUnitTotalLb(result.unitTotalLb)
     if (result.otherComponentsLb !== undefined) {
       setOtherComponentsWeight(result.otherComponentsLb)
@@ -2147,6 +2153,7 @@ export default function BeamLoadCalculator() {
                 results={results}
                 bendingMomentData={bendingMomentData}
                 cog={cogResult}
+                casingMesh={casingMesh}
               />
             </CardContent>
           </Card>

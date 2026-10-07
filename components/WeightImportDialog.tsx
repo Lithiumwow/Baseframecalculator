@@ -38,6 +38,7 @@ import { isSystemairWeightTableText } from "../utils/weightTableParser"
 import { calculateCOG, buildCOGItemsFromImport } from "../utils/cogCalculation"
 import type { WeightAuditBreakdown } from "../utils/weightAudit"
 import { parseDxfSections, readDxfFile } from "../utils/dxfSectionImport"
+import { extractDxfMesh, type DxfCasingMesh } from "../utils/dxfMeshExtract"
 
 export interface WeightImportResult {
   sections: Section[]
@@ -53,6 +54,8 @@ export interface WeightImportResult {
   otherComponentsLb?: number
   weightAudit?: WeightAuditBreakdown
   warnings?: string[]
+  /** Triangle mesh from DXF 3DFACE entities for the 3D casing view */
+  casingMesh?: DxfCasingMesh | null
 }
 
 interface WeightImportDialogProps {
@@ -80,6 +83,7 @@ export function WeightImportDialog({
   const [weightsImage, setWeightsImage] = useState<File | null>(null)
   const [pastedWeightText, setPastedWeightText] = useState("")
   const [dxfFileName, setDxfFileName] = useState<string | null>(null)
+  const [pendingDxfMesh, setPendingDxfMesh] = useState<DxfCasingMesh | null>(null)
 
   const resetImportForm = () => {
     setImportText("")
@@ -93,6 +97,7 @@ export function WeightImportDialog({
     setWeightsImage(null)
     setPastedWeightText("")
     setDxfFileName(null)
+    setPendingDxfMesh(null)
   }
 
   useEffect(() => {
@@ -230,13 +235,25 @@ export function WeightImportDialog({
     }
   }
 
-  const buildPreviewFromDxf = (dxfText: string): WeightImportResult => {
+  const buildPreviewFromDxf = (dxfText: string, fileName?: string): WeightImportResult => {
     const parsed = parseDxfSections(dxfText)
+    const mesh = extractDxfMesh(dxfText, fileName)
+    setPendingDxfMesh(mesh)
     const previewResult = buildPreviewFromImportData(parsed.importData)
     previewResult.genioxType = parsed.genioxType != null ? String(parsed.genioxType) : undefined
-    previewResult.warnings = parsed.warnings
+    previewResult.warnings = [...(parsed.warnings || [])]
+    if (mesh) {
+      previewResult.warnings.push(
+        `Casing mesh ready for 3D view: ${mesh.triangleCount.toLocaleString()} triangles from 3DFACE entities.`
+      )
+    } else {
+      previewResult.warnings.push(
+        "No 3DFACE mesh found in this DXF — 3D view will use simple section boxes."
+      )
+    }
     previewResult.importJson = JSON.stringify(parsed.importData, null, 2)
     previewResult.loads = []
+    previewResult.casingMesh = mesh
     return previewResult
   }
 
@@ -247,15 +264,18 @@ export function WeightImportDialog({
     try {
       setError(null)
       setPreview(null)
+      setPendingDxfMesh(null)
       setIsProcessingOCR(true)
       setOcrStage("Reading DXF...")
       setDxfFileName(file.name)
       const text = await readDxfFile(file)
+      setOcrStage("Extracting casing mesh...")
       setImportText(JSON.stringify(parseDxfSections(text).importData, null, 2))
-      setPreview(buildPreviewFromDxf(text))
+      setPreview(buildPreviewFromDxf(text, file.name))
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse DXF")
       setPreview(null)
+      setPendingDxfMesh(null)
     } finally {
       setIsProcessingOCR(false)
       setOcrStage("")
@@ -300,12 +320,18 @@ export function WeightImportDialog({
           const importData = parseWeightImportJSON(importText)
           const result = buildPreviewFromImportData(importData)
           result.loads = []
+          result.casingMesh = pendingDxfMesh
           result.warnings = [
             "DXF import creates empty casing sections (geometry only). Import a weight table afterward for loads.",
           ]
+          if (pendingDxfMesh) {
+            result.warnings.push(
+              `Casing mesh ready for 3D view: ${pendingDxfMesh.triangleCount.toLocaleString()} triangles.`
+            )
+          }
           setPreview(result)
         } catch {
-          setPreview(buildPreviewFromDxf(importText))
+          setPreview(buildPreviewFromDxf(importText, dxfFileName || undefined))
         }
         return
       }
@@ -364,10 +390,14 @@ export function WeightImportDialog({
 
   const handleApply = () => {
     if (preview) {
-      onImport(preview)
+      onImport({
+        ...preview,
+        casingMesh: preview.casingMesh ?? pendingDxfMesh ?? null,
+      })
       setOpen(false)
       setImportText("")
       setPreview(null)
+      setPendingDxfMesh(null)
       setError(null)
       setLayoutImage(null)
       setWeightsImage(null)
@@ -434,8 +464,9 @@ export function WeightImportDialog({
           {importType === "dxf" && (
             <div className="space-y-4 border rounded-lg p-4 bg-gray-50">
               <p className="text-xs text-muted-foreground">
-                Upload a Systemair / Geniox 3D DXF to create empty casing sections from module geometry.
-                Weights are not in the DXF — import a weight table afterward.
+                Upload a Systemair / Geniox 3D DXF to create empty casing sections from module geometry
+                and load the casing triangle mesh into the 3D view. Weights are not in the DXF — import a
+                weight table afterward.
               </p>
               <div>
                 <Label htmlFor="dxf-upload">DXF file</Label>
