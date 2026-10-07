@@ -23,9 +23,9 @@ interface UseDiagramCalculationsParams {
   totalRoofWeightUnit: "N" | "kg" | "lbs"
   otherComponentsWeight: number
   otherComponentsWeightUnit: "N" | "kg" | "lbs"
-  setShearForceData: (data: Array<{ x: number; y: number }>) => void
-  setBendingMomentData: (data: Array<{ x: number; y: number }>) => void
-  setDeflectionData: (data: Array<{ x: number; y: number }>) => void
+  setShearForceData: (data: Array<{ x: number; y: number | null }>) => void
+  setBendingMomentData: (data: Array<{ x: number; y: number | null }>) => void
+  setDeflectionData: (data: Array<{ x: number; y: number | null }>) => void
 }
 
 export function useDiagramCalculations(params: UseDiagramCalculationsParams) {
@@ -99,7 +99,7 @@ export function useDiagramCalculations(params: UseDiagramCalculationsParams) {
         beamLoads.pointLoads,
         E,
         I,
-        50
+        80
       )
 
       if (multispan.shear.length > 0) {

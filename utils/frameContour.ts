@@ -8,7 +8,7 @@ export interface ContourSample {
 }
 
 export function buildMomentContour(
-  bendingMomentData: Array<{ x: number; y: number }>,
+  bendingMomentData: Array<{ x: number; y: number | null }>,
   frameLengthMm: number,
   samples: number = 48,
   /** Optional fallback peaks when moment diagram is empty (xMm, relative weight) */
@@ -16,8 +16,11 @@ export function buildMomentContour(
 ): ContourSample[] {
   if (frameLengthMm <= 0) return []
 
-  const maxAbs = bendingMomentData.reduce((m, p) => Math.max(m, Math.abs(p.y)), 0)
-  const useMoment = maxAbs > 0 && bendingMomentData.length > 0
+  const momentPoints = bendingMomentData.filter(
+    (p): p is { x: number; y: number } => p.y != null && Number.isFinite(p.y)
+  )
+  const maxAbs = momentPoints.reduce((m, p) => Math.max(m, Math.abs(p.y)), 0)
+  const useMoment = maxAbs > 0 && momentPoints.length > 0
   const maxPeak = loadPeaks.reduce((m, p) => Math.max(m, p.weight), 0)
 
   const out: ContourSample[] = []
@@ -25,9 +28,9 @@ export function buildMomentContour(
     const xMm = (frameLengthMm * i) / (samples - 1)
     let intensity = 0
     if (useMoment) {
-      let best = bendingMomentData[0]
+      let best = momentPoints[0]
       let bestD = Math.abs(best.x - xMm)
-      for (const p of bendingMomentData) {
+      for (const p of momentPoints) {
         const d = Math.abs(p.x - xMm)
         if (d < bestD) {
           best = p

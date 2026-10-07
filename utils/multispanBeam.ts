@@ -24,7 +24,8 @@ export interface PointLoadOnBeam {
 
 export interface BeamDiagramPoint {
   x: number
-  y: number
+  /** null = intentional break between independent spans (for charting) */
+  y: number | null
 }
 
 export interface MultispanBeamResult {
@@ -210,20 +211,34 @@ function integrateDeflection(
   I: number
 ): number[] {
   const n = xs.length
-  if (n < 2) return moments.map(() => 0)
-  const h = xs[1] - xs[0]
+  if (n < 2 || E <= 0 || I <= 0) return moments.map(() => 0)
   const kappa = moments.map((m) => m / (E * I))
   const theta: number[] = [0]
   for (let i = 1; i < n; i++) {
+    const h = xs[i] - xs[i - 1]
     theta.push(theta[i - 1] + ((kappa[i - 1] + kappa[i]) / 2) * h)
   }
   const deltaRaw: number[] = [0]
   for (let i = 1; i < n; i++) {
+    const h = xs[i] - xs[i - 1]
     deltaRaw.push(deltaRaw[i - 1] + ((theta[i - 1] + theta[i]) / 2) * h)
   }
-  const L = xs[n - 1]
+  const L = xs[n - 1] - xs[0]
+  if (L <= 0) return deltaRaw.map(() => 0)
   const end = deltaRaw[n - 1]
-  return deltaRaw.map((d, i) => d - (xs[i] / L) * end)
+  // Enforce zero deflection at both ends of this simply-supported span
+  return deltaRaw.map((d, i) => d - ((xs[i] - xs[0]) / L) * end)
+}
+
+function roundDiagramY(value: number, kind: "shear" | "moment" | "deflectionMm"): number {
+  if (kind === "deflectionMm") {
+    // Avoid staircase plots when δ is << 0.01 mm (toFixed(4) was quantizing)
+    const abs = Math.abs(value)
+    if (abs >= 1) return Number(value.toFixed(4))
+    if (abs >= 0.01) return Number(value.toFixed(5))
+    return Number(value.toFixed(7))
+  }
+  return Number(value.toFixed(3))
 }
 
 export function analyzeMultispanBeam(
@@ -232,7 +247,7 @@ export function analyzeMultispanBeam(
   pointLoads: PointLoadOnBeam[],
   E: number,
   I: number,
-  pointsPerSpan: number = 40
+  pointsPerSpan: number = 80
 ): MultispanBeamResult {
   const supports = [...supportPositionsMm].sort((a, b) => a - b)
   const shear: BeamDiagramPoint[] = []
@@ -256,7 +271,8 @@ export function analyzeMultispanBeam(
 
     const xs: number[] = []
     const ms: number[] = []
-    const localPoints = Math.max(10, pointsPerSpan)
+    // Denser sampling on longer spans keeps curves smooth
+    const localPoints = Math.max(24, Math.round(pointsPerSpan * Math.max(0.5, spanLenM / 1.0)))
 
     for (let i = 0; i < localPoints; i++) {
       const xLocalM = (spanLenM * i) / (localPoints - 1)
@@ -270,8 +286,14 @@ export function analyzeMultispanBeam(
       maxShearN = Math.max(maxShearN, Math.abs(v))
       maxMomentNm = Math.max(maxMomentNm, Math.abs(m))
 
-      shear.push({ x: Number(xMm.toFixed(2)), y: Number(v.toFixed(2)) })
-      moment.push({ x: Number(xMm.toFixed(2)), y: Number(m.toFixed(2)) })
+      shear.push({ x: Number(xMm.toFixed(2)), y: roundDiagramY(v, "shear") })
+      moment.push({ x: Number(xMm.toFixed(2)), y: roundDiagramY(m, "moment") })
+    }
+
+    // Break chart series between independent spans (avoids fake bridges)
+    if (s < supports.length - 2) {
+      shear.push({ x: Number(spanEndMm.toFixed(2)), y: null })
+      moment.push({ x: Number(spanEndMm.toFixed(2)), y: null })
     }
 
     if (E > 0 && I > 0) {
@@ -279,11 +301,17 @@ export function analyzeMultispanBeam(
       for (let i = 0; i < xs.length; i++) {
         const xMm = spanStartMm + xs[i] * 1000
         const dMm = deltas[i] * 1000
-        deflection.push({ x: Number(xMm.toFixed(2)), y: Number(dMm.toFixed(4)) })
+        deflection.push({
+          x: Number(xMm.toFixed(2)),
+          y: roundDiagramY(dMm, "deflectionMm"),
+        })
         if (Math.abs(dMm) > maxDeflectionMm) {
           maxDeflectionMm = Math.abs(dMm)
           governingSpanMm = spanEndMm - spanStartMm
         }
+      }
+      if (s < supports.length - 2) {
+        deflection.push({ x: Number(spanEndMm.toFixed(2)), y: null })
       }
     }
   }

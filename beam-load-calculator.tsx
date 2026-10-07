@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts"
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts"
 import Head from "next/head"
 import { Download, Loader2, Calculator, Mail, BarChart3, Ruler, Package, Tag, Info, RotateCcw, CheckCircle, AlertCircle } from "lucide-react"
 
@@ -68,9 +68,9 @@ export default function BeamLoadCalculator() {
   const [rightSupport, setRightSupport] = useState(1000)
   const [loads, setLoads] = useState<Load[]>([{ type: "Point Load", magnitude: 1000, startPosition: 500, unit: "N" }])
   const [sections, setSections] = useState<Section[]>([])
-  const [shearForceData, setShearForceData] = useState<Array<{ x: number; y: number }>>([])
-  const [bendingMomentData, setBendingMomentData] = useState<Array<{ x: number; y: number }>>([])
-  const [deflectionData, setDeflectionData] = useState<Array<{ x: number; y: number }>>([])
+  const [shearForceData, setShearForceData] = useState<Array<{ x: number; y: number | null }>>([])
+  const [bendingMomentData, setBendingMomentData] = useState<Array<{ x: number; y: number | null }>>([])
+  const [deflectionData, setDeflectionData] = useState<Array<{ x: number; y: number | null }>>([])
   const [material, setMaterial] = useState<keyof typeof standardMaterials>("ASTM A36 Structural Steel")
   const [customMaterial, setCustomMaterial] = useState({ ...standardMaterials["Custom"] })
   const [width, setWidth] = useState(100)
@@ -2188,21 +2188,23 @@ export default function BeamLoadCalculator() {
               <div id="shear-force-diagram" style={{ width: "100%", height: 250, minWidth: 0, minHeight: 250 }}>
                 {shearForceData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={shearForceData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
+                    <LineChart data={shearForceData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis 
-                        dataKey="x" 
+                      <XAxis
+                        type="number"
+                        dataKey="x"
+                        domain={["dataMin", "dataMax"]}
                         label={{ value: "Position (mm)", position: "bottom", offset: 5, style: { textAnchor: "middle" } }}
                         tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
-                      <YAxis 
+                      <YAxis
                         label={{ value: "Shear Force (N)", angle: -90, position: "left", offset: 0, style: { textAnchor: "middle" } }}
                         tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <Tooltip />
-                      <Area type="monotone" dataKey="y" stroke="#8884d8" fill="#8884d8" />
+                      <Line type="linear" dataKey="y" stroke="#8884d8" strokeWidth={2} dot={false} connectNulls={false} />
                       <ReferenceLine y={0} stroke="#000" strokeDasharray="3 3" />
-                    </AreaChart>
+                    </LineChart>
                   </ResponsiveContainer>
                 ) : (
                   <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -2210,6 +2212,9 @@ export default function BeamLoadCalculator() {
                   </div>
                 )}
               </div>
+              <p className="text-[11px] text-gray-500 mt-2">
+                Multi-span gravity model: each bay between legs is simply supported, so shear can jump at supports and moment returns to ~0 there.
+              </p>
             </CardContent>
           </Card>
 
@@ -2225,21 +2230,23 @@ export default function BeamLoadCalculator() {
               <div id="bending-moment-diagram" style={{ width: "100%", height: 250, minWidth: 0, minHeight: 250 }}>
                 {bendingMomentData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={bendingMomentData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
+                    <LineChart data={bendingMomentData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis 
-                        dataKey="x" 
+                      <XAxis
+                        type="number"
+                        dataKey="x"
+                        domain={["dataMin", "dataMax"]}
                         label={{ value: "Position (mm)", position: "bottom", offset: 5, style: { textAnchor: "middle" } }}
                         tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
-                      <YAxis 
+                      <YAxis
                         label={{ value: "Bending Moment (N·m)", angle: -90, position: "left", offset: 0, style: { textAnchor: "middle" } }}
                         tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <Tooltip />
-                      <Area type="monotone" dataKey="y" stroke="#82ca9d" fill="#82ca9d" />
+                      <Line type="monotone" dataKey="y" stroke="#82ca9d" strokeWidth={2} dot={false} connectNulls={false} />
                       <ReferenceLine y={0} stroke="#000" strokeDasharray="3 3" />
-                    </AreaChart>
+                    </LineChart>
                   </ResponsiveContainer>
                 ) : (
                   <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -2262,21 +2269,23 @@ export default function BeamLoadCalculator() {
               <div id="deflection-diagram" style={{ width: "100%", height: 250, minWidth: 0, minHeight: 250 }}>
                 {deflectionData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={deflectionData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
+                    <LineChart data={deflectionData} margin={{ top: 10, right: 10, left: 50, bottom: 40 }}>
                       <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis 
-                        dataKey="x" 
+                      <XAxis
+                        type="number"
+                        dataKey="x"
+                        domain={["dataMin", "dataMax"]}
                         label={{ value: "Position (mm)", position: "bottom", offset: 5, style: { textAnchor: "middle" } }}
                         tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
-                      <YAxis 
+                      <YAxis
                         label={{ value: "Deflection (mm)", angle: -90, position: "left", offset: 0, style: { textAnchor: "middle" } }}
                         tick={{ fontSize: 10, fontFamily: '"Noto Sans", sans-serif' }}
                       />
                       <Tooltip />
-                      <Area type="monotone" dataKey="y" stroke="#ff7300" fill="#ff7300" />
+                      <Line type="monotone" dataKey="y" stroke="#ff7300" strokeWidth={2} dot={false} connectNulls={false} />
                       <ReferenceLine y={0} stroke="#000" strokeDasharray="3 3" />
-                    </AreaChart>
+                    </LineChart>
                   </ResponsiveContainer>
                 ) : (
                   <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
