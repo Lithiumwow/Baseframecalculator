@@ -19,148 +19,187 @@ export const HelpDialog: React.FC = () => {
         </DialogHeader>
         <ScrollArea className="h-[70vh] pr-4">
           <div className="space-y-6 p-4">
-            {/* Shear Force */}
+            <section>
+              <h3 className="text-lg font-semibold mb-3">Load Types (Simple Beam)</h3>
+              <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside ml-2">
+                <li>
+                  <strong>Point Load:</strong> concentrated force at a position
+                </li>
+                <li>
+                  <strong>Uniform Load:</strong> intensity <em>w</em> (N/m) from start to end
+                </li>
+                <li>
+                  <strong>Distributed Load:</strong> total weight (or pressure × footprint) spread
+                  uniformly over its length — treated as a UDL segment for reactions, shear, moment,
+                  and deflection
+                </li>
+              </ul>
+            </section>
+
             <section>
               <h3 className="text-lg font-semibold mb-3">Shear Force</h3>
               <p className="text-sm text-gray-600 mb-2">For simply supported beam:</p>
-              <p className="text-sm font-mono bg-gray-100 p-2 rounded">V(x) = R₁ - ΣPᵢ - Σwᵢ(x - aᵢ)</p>
+              <p className="text-sm font-mono bg-gray-100 p-2 rounded">
+                V(x) = R₁ − ΣPᵢ − Σwᵢ·(loaded length up to x)
+              </p>
               <p className="text-sm text-gray-600">
-                Where R₁ = left reaction, Pᵢ = point loads, wᵢ = distributed loads, aᵢ = load positions
+                Where R₁ = left reaction, Pᵢ = point loads, wᵢ = line-load intensity (N/m)
               </p>
             </section>
 
-            {/* Bending Moment */}
             <section>
               <h3 className="text-lg font-semibold mb-3">Bending Moment</h3>
-              <p className="text-sm text-gray-600 mb-2">For simply supported beam:</p>
-              <p className="text-sm font-mono bg-gray-100 p-2 rounded">M(x) = R₁(x - a) - ΣPᵢ(x - aᵢ) - Σwᵢ(x - aᵢ)²/2</p>
+              <p className="text-sm text-gray-600 mb-2">Section method from left support:</p>
+              <p className="text-sm font-mono bg-gray-100 p-2 rounded">
+                M(x) = R₁·x − ΣPᵢ·(x − aᵢ) − Σwᵢ·L_loaded·(x − centroid)
+              </p>
               <p className="text-sm text-gray-600">
-                Where R₁ = left reaction, a = left support position, Pᵢ = point loads, wᵢ = distributed loads
+                Reactions use lever rule: for a load with centroid distance <em>a</em> from the left
+                support and span <em>L</em>, R_left = P·(L−a)/L, R_right = P·a/L.
               </p>
             </section>
 
-            {/* Deflection */}
             <section>
               <h3 className="text-lg font-semibold mb-3">Maximum Deflection</h3>
-              <p className="text-sm text-gray-600 mb-2">For simply supported beam with uniform load:</p>
-              <p className="text-sm font-mono bg-gray-100 p-2 rounded">δ_max = 5wL⁴/(384EI)</p>
-              <p className="text-sm text-gray-600">
-                Where w = load per unit length, L = span, E = elastic modulus, I = moment of inertia
+              <p className="text-sm text-gray-600 mb-2">
+                Simple beam deflection is obtained by double-integrating M/EI along the span
+                (supports enforced to zero deflection). This covers point, uniform, and distributed
+                loads without assuming a single closed-form case.
               </p>
-              <div className="mt-2">
-                <h4 className="font-medium">Deflection at any position (x):</h4>
-                <p className="text-sm text-gray-600 mb-1">For a point load P at position a:</p>
-                <p className="text-sm font-mono bg-gray-100 p-2 rounded">
-                  δ(x) = {`{P·b·x·(L²-b²-x²) / (6·L·E·I)`} for x ≤ a<br/>
-                  δ(x) = {`{P·a·(L-x)·(2Lx-x²-a²) / (6·L·E·I)`} for x &gt; a
-                </p>
-                <p className="text-sm text-gray-600 mb-1">For multiple point loads, sum the deflection from each load at each position (superposition).</p>
-                <p className="text-sm text-gray-600 mb-1">For uniform load over the entire span:</p>
-                <p className="text-sm font-mono bg-gray-100 p-2 rounded">
-                  δ(x) = {`w·x·(L³-2Lx²+x³) / (24·E·I)`}
-                </p>
-                <p className="text-sm text-gray-600">For multiple loads, total deflection is the sum of all contributions at each position.</p>
-              </div>
+              <p className="text-sm text-gray-600 mb-1">Reference closed forms (checks):</p>
+              <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">
+                Point load at midspan: δ_max = PL³/(48EI)
+                <br />
+                Full UDL: δ_max = 5wL⁴/(384EI)
+              </p>
+              <p className="text-sm text-gray-600">
+                Base Frame may also use a multi-span model between leg supports for the longitudinal
+                beam, plus a simplified UDL estimate on perimeter beams.
+              </p>
             </section>
 
-            {/* Base Frame Analysis - Corner Reactions */}
             <section>
-              <h3 className="text-lg font-semibold mb-3">Base Frame Analysis - Corner Reactions</h3>
+              <h3 className="text-lg font-semibold mb-3">Base Frame — Corner Reactions</h3>
               <p className="text-sm text-gray-600 mb-2">
-                For base frame analysis, loads are distributed to four corner reactions (R1, R2, R3, R4) using the <strong>area method</strong>:
+                Loads are distributed to four corners (R1–R4) with the <strong>area method</strong>.
+                Distributed footprints are centered on the frame width (matches the diagram).
               </p>
               <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">
-                Rᵢ = Σ(Pⱼ × Aᵢⱼ / A_total) + Frame Weight / 4
+                Rᵢ = Σ(Pⱼ × Aᵢⱼ / A_total) + frame/section self-weight shares
               </p>
-              <div className="text-sm text-gray-600 space-y-2">
-                <p><strong>Where:</strong></p>
-                <ul className="list-disc list-inside ml-2 space-y-1">
-                  <li>Pⱼ = load weight (in Newtons)</li>
-                  <li>Aᵢⱼ = area of rectangle from load center to the <strong>opposite</strong> corner i</li>
-                  <li>A_total = total frame area (L × W)</li>
-                  <li>Frame Weight = weight of the frame structure itself, distributed equally to all 4 corners</li>
-                </ul>
-                <p className="mt-2"><strong>Corner positions:</strong></p>
-                <ul className="list-disc list-inside ml-2 space-y-1">
-                  <li>R1 = Top-left corner (0, 0)</li>
-                  <li>R2 = Top-right corner (L, 0)</li>
-                  <li>R3 = Bottom-left corner (0, W)</li>
-                  <li>R4 = Bottom-right corner (L, W)</li>
-                </ul>
-                <p className="mt-2"><strong>Area calculation for each corner:</strong></p>
-                <ul className="list-disc list-inside ml-2 space-y-1">
-                  <li>For R1 (top-left): A₁ = (L - x_load) × (W - y_load)</li>
-                  <li>For R2 (top-right): A₂ = x_load × (W - y_load)</li>
-                  <li>For R3 (bottom-left): A₃ = (L - x_load) × y_load</li>
-                  <li>For R4 (bottom-right): A₄ = x_load × y_load</li>
-                </ul>
-                <p className="mt-2 text-xs italic">
-                  Where x_load and y_load are the load center coordinates. This method ensures loads closer to a corner produce higher reactions at that corner.
-                </p>
-              </div>
+              <ul className="text-sm text-gray-600 list-disc list-inside ml-2 space-y-1">
+                <li>R1 top-left (0, 0): A₁ = (L − x)×(W − y)</li>
+                <li>R2 top-right (L, 0): A₂ = x×(W − y)</li>
+                <li>R3 bottom-left (0, W): A₃ = (L − x)×y</li>
+                <li>R4 bottom-right (L, W): A₄ = x×y</li>
+              </ul>
+              <p className="text-sm text-gray-600 mt-2">
+                Equilibrium check: R1 + R2 + R3 + R4 = total vertical load.
+              </p>
             </section>
 
-            {/* Stress Calculations */}
             <section>
               <h3 className="text-lg font-semibold mb-3">Stress Calculations</h3>
-              
+
               <div className="mb-3">
-                <h4 className="font-medium text-sm mb-2">Normal Stress (Bending Stress):</h4>
-                <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">
-                  σ = M / S
-                </p>
+                <h4 className="font-medium text-sm mb-2">Normal Stress (Bending):</h4>
+                <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">σ = M / S</p>
                 <p className="text-sm text-gray-600">
-                  Where M = maximum bending moment (N·m), S = section modulus (m³). Result is in Pa, converted to MPa (1 MPa = 10⁶ Pa).
+                  M in N·m, S in m³ → Pa, reported in MPa.
                 </p>
               </div>
 
               <div className="mb-3">
                 <h4 className="font-medium text-sm mb-2">Shear Stress:</h4>
-                <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">
-                  τ = 1.5 × V / A
-                </p>
-                <p className="text-sm text-gray-600">
-                  Where V = maximum shear force (N), A = cross-sectional area (m²). The factor 1.5 accounts for the maximum shear stress in rectangular sections (occurs at the neutral axis). Result is in Pa, converted to MPa.
-                </p>
-              </div>
-
-              <div className="mb-3">
-                <h4 className="font-medium text-sm mb-2">Safety Factor:</h4>
-                <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">
-                  SF = σ_yield / σ_max
-                </p>
-                <p className="text-sm text-gray-600">
-                  Where σ_yield = material yield strength (MPa), σ_max = maximum normal stress (MPa). A safety factor ≥ 2.0 is typically recommended for structural applications.
-                </p>
-              </div>
-            </section>
-
-            {/* Cross-Sectional Properties */}
-            <section>
-              <h3 className="text-lg font-semibold mb-3">Cross-Sectional Properties</h3>
-              
-              <div className="mb-3">
-                <h4 className="font-medium text-sm mb-2">Moment of Inertia (I):</h4>
-                <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside ml-2">
-                  <li><strong>Rectangular:</strong> I = b·h³/12</li>
-                  <li><strong>I-Beam:</strong> I = 2(I_flange + I_parallel) + I_web</li>
-                  <li><strong>C-Channel:</strong> I = 2·I_flange + I_web</li>
-                  <li><strong>Circular:</strong> I = π·d⁴/64</li>
+                <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside ml-2 mb-2">
+                  <li>
+                    <strong>Rectangular:</strong> τ_max = 1.5·V / A
+                  </li>
+                  <li>
+                    <strong>Circular:</strong> τ_max = (4/3)·V / A
+                  </li>
+                  <li>
+                    <strong>I-Beam / C-Channel:</strong> τ ≈ V / (t_w · h_web) (average web shear)
+                  </li>
                 </ul>
               </div>
 
               <div className="mb-3">
-                <h4 className="font-medium text-sm mb-2">Section Modulus (S):</h4>
+                <h4 className="font-medium text-sm mb-2">Safety Factor (governing):</h4>
                 <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">
-                  S = I / c
+                  SF_bending = F_y / σ
+                  <br />
+                  SF_shear = (F_y / √3) / τ
+                  <br />
+                  SF = min(SF_bending, SF_shear)
                 </p>
                 <p className="text-sm text-gray-600">
-                  Where I = moment of inertia, c = distance from neutral axis to extreme fiber (typically h/2 for symmetric sections).
+                  Shear yield uses the von Mises factor F_y/√3. The UI reports the governing
+                  (smaller) factor and both components. This is a screening check, not a full
+                  AISC/Eurocode design.
+                </p>
+                <p className="text-sm text-gray-600 mt-1">
+                  A safety factor ≥ 2.0 is often used as a rough structural screening threshold.
                 </p>
               </div>
             </section>
 
-            {/* Units */}
+            <section>
+              <h3 className="text-lg font-semibold mb-3">Cross-Sectional Properties</h3>
+
+              <div className="mb-3">
+                <h4 className="font-medium text-sm mb-2">Moment of Inertia (strong axis I_xx):</h4>
+                <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside ml-2">
+                  <li>
+                    <strong>Rectangular:</strong> I = b·h³/12
+                  </li>
+                  <li>
+                    <strong>I-Beam / C-Channel:</strong> I = 2·I_flange + I_web (flange width b_f =
+                    overall flange width including web). Strong-axis only — weak-axis / shear
+                    center not modeled.
+                  </li>
+                  <li>
+                    <strong>Circular:</strong> I = π·d⁴/64
+                  </li>
+                </ul>
+              </div>
+
+              <div className="mb-3">
+                <h4 className="font-medium text-sm mb-2">Section Modulus:</h4>
+                <p className="text-sm font-mono bg-gray-100 p-2 rounded mb-2">S = I / c</p>
+                <p className="text-sm text-gray-600">
+                  c = h/2 (or d/2 for circular) for extreme fiber about the strong axis.
+                </p>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="text-lg font-semibold mb-3">3D Baseframe Load View</h3>
+              <p className="text-sm text-gray-600 mb-2">
+                For Base Frame analysis, the 3D viewer shows a parametric steel frame (not the full
+                AHU casing mesh):
+              </p>
+              <ul className="text-sm text-gray-600 list-disc list-inside ml-2 space-y-1">
+                <li>Longitudinal rails colored by bending moment |M(x)| from your current loads</li>
+                <li>Translucent boxes = casing sections</li>
+                <li>Red arrows = component loads; amber = section casing weight</li>
+                <li>Green arrows = corner reactions R1–R4; orange = COG</li>
+              </ul>
+              <p className="text-sm text-gray-600 mt-2">
+                This is a screening visualization of the calculator results, not a continuum FEA
+                solve.
+              </p>
+            </section>
+
+            <section>
+              <h3 className="text-lg font-semibold mb-3">DXF Section Import</h3>
+              <p className="text-sm text-gray-600">
+                Systemair / Geniox 3D DXF exports can create empty casing sections from module side
+                panels and set Geniox type / frame size. They do not contain component weights —
+                import a weight table afterward.
+              </p>
+            </section>
+
             <section>
               <h3 className="text-lg font-semibold mb-3">Units Used</h3>
               <ul className="text-sm text-gray-600 space-y-1">
@@ -177,4 +216,3 @@ export const HelpDialog: React.FC = () => {
     </Dialog>
   )
 }
-

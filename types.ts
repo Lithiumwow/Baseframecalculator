@@ -63,7 +63,14 @@ export interface Results {
   maxBendingMoment: number
   maxNormalStress: number
   maxShearStress: number
+  /** Governing yield-based safety factor = min(bending, shear) */
   safetyFactor: number
+  /** Fy / σ_bending */
+  safetyFactorBending?: number
+  /** (Fy/√3) / τ */
+  safetyFactorShear?: number
+  /** Which limit state governs the reported safety factor */
+  safetyFactorGoverning?: "bending" | "shear" | "none"
   totalBeams: number
   loadPerBeam: number
   momentOfInertia: number

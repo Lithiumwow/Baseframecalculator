@@ -2,11 +2,13 @@ import { useCallback } from "react"
 import type { Load, Section, Results } from "../types"
 import type { MaterialProperties } from "../types"
 import { standardMaterials } from "../constants"
-import { validateNumber, validatePositive } from "../utils/validation"
+import { validatePositive } from "../utils/validation"
 import { getLoadMagnitudeInN, convertSectionWeightToN, getDistributedLoadTotalWeightN } from "../utils/conversions"
 import { collectLegSupportPositionsMm } from "../utils/sectionSupports"
 import { analyzeMultispanBeam, buildLongitudinalBeamLoads } from "../utils/multispanBeam"
+import { analyzeSimpleBeam } from "../utils/simpleBeamAnalysis"
 import { computeLiftingAnalysis } from "../utils/liftingAnalysis"
+import { computeSectionProperties, computeStressAndSafety } from "../utils/sectionStress"
 
 interface UseBeamCalculationsParams {
   analysisType: "Simple Beam" | "Base Frame"
@@ -134,87 +136,13 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
     let longitudinalSpanM = 0
     let transverseSpanM = 0
 
+    // Simple-beam peaks/deflection filled after section I is known
+    let simpleBeamMaxDeflectionM = 0
+
     if (analysisType === "Simple Beam") {
-      // Single beam analysis
       totalBeams = 1
       loadPerBeam = totalAppliedLoad
       frameWeightN = beamVolume * beamLengthM * beamDensity * 9.81
-
-      // Calculate reactions for simple beam
-      const leftSupportM = leftSupport / 1000
-      const rightSupportM = rightSupport / 1000
-      const spanLength = rightSupportM - leftSupportM
-
-      let R1 = 0,
-        R2 = 0
-
-      loads.forEach((load) => {
-        const loadStartPositionM = load.startPosition / 1000
-        const magnitudeInN = getLoadMagnitudeInN(load)
-
-        if (load.type === "Point Load") {
-          const a = loadStartPositionM - leftSupportM
-          const b = rightSupportM - loadStartPositionM
-          if (spanLength > 0) {
-            R1 += (magnitudeInN * b) / spanLength
-            R2 += (magnitudeInN * a) / spanLength
-          }
-        } else if (load.type === "Uniform Load") {
-          const loadEndPositionM = load.endPosition! / 1000
-          const loadStartM = Math.max(loadStartPositionM, leftSupportM)
-          const loadEndM = Math.min(loadEndPositionM, rightSupportM)
-
-          if (loadEndM > loadStartM) {
-            const loadLengthM = loadEndM - loadStartM
-            const totalLoad = magnitudeInN * loadLengthM
-            const loadCentroidM = (loadStartM + loadEndM) / 2
-
-            const a = loadCentroidM - leftSupportM
-            const b = rightSupportM - loadCentroidM
-            if (spanLength > 0) {
-              R1 += (totalLoad * b) / spanLength
-              R2 += (totalLoad * a) / spanLength
-            }
-          }
-        }
-      })
-
-      maxShearForce = Math.max(Math.abs(R1), Math.abs(R2))
-
-      // Calculate maximum bending moment
-      const numPoints = 100
-      const dx = beamLengthM / (numPoints - 1)
-
-      for (let i = 0; i < numPoints; i++) {
-        const x = i * dx
-        let moment = 0
-
-        if (x >= leftSupportM) {
-          moment = R1 * (x - leftSupportM)
-        }
-        if (x >= rightSupportM) {
-          moment -= R2 * (x - rightSupportM)
-        }
-
-        loads.forEach((load) => {
-          const magnitudeInN = getLoadMagnitudeInN(load)
-          if (load.type === "Point Load" && x > load.startPosition / 1000) {
-            moment -= magnitudeInN * (x - load.startPosition / 1000)
-          } else if (load.type === "Uniform Load") {
-            const loadStartM = load.startPosition / 1000
-            const loadEndM = load.endPosition! / 1000
-            if (x > loadStartM) {
-              const loadedLength = Math.min(x - loadStartM, loadEndM - loadStartM)
-              const loadCentroid = loadStartM + loadedLength / 2
-              moment -= magnitudeInN * loadedLength * (x - loadCentroid)
-            }
-          }
-        })
-
-        maxBendingMoment = Math.max(maxBendingMoment, Math.abs(moment))
-      }
-
-      longitudinalBendingMoment = maxBendingMoment
       governingBeamDirection = "longitudinal"
       governingBeamSpanMm = beamLengthM * 1000
     } else {
@@ -242,14 +170,13 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
 
         if (load.type === "Distributed Load") {
           let loadLengthMM = 0
-          let loadWidthMM = 0
           
           if (load.loadLength && load.loadWidth) {
             loadLengthMM = validatePositive(load.loadLength, 100)
-            loadWidthMM = validatePositive(load.loadWidth, 100)
             loadWeight = getDistributedLoadTotalWeightN(load)
             loadCenterX = (load.startPosition + loadLengthMM / 2) / 1000
-            loadCenterY = (frameWidth - loadWidthMM / 2) / 1000
+            // Match diagram: footprint centered on frame width
+            loadCenterY = frameWidthM / 2
           } else if (load.area) {
             const sideLengthMM = Math.sqrt(validatePositive(load.area, 1)) * 1000
             loadWeight = getDistributedLoadTotalWeightN(load)
@@ -461,53 +388,35 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
 
     // Calculate cross-sectional properties for stress analysis
     const materialProps = material === "Custom" ? customMaterial : standardMaterials[material]
-    let area: number, momentOfInertia: number, sectionModulus: number
-
-    switch (beamCrossSection) {
-      case "Rectangular":
-        area = widthM * heightM
-        momentOfInertia = (widthM * Math.pow(heightM, 3)) / 12
-        sectionModulus = momentOfInertia / (heightM / 2)
-        break
-      case "I Beam":
-        area = 2 * flangeWidthM * flangeThicknessM + (heightM - 2 * flangeThicknessM) * webThicknessM
-        const I_total_flange = (flangeWidthM * Math.pow(flangeThicknessM, 3)) / 12
-        const I_flange_parallel = flangeWidthM * flangeThicknessM * Math.pow((heightM - flangeThicknessM) / 2, 2)
-        const I_web = (webThicknessM * Math.pow(heightM - 2 * flangeThicknessM, 3)) / 12
-        momentOfInertia = 2 * (I_total_flange + I_flange_parallel) + I_web
-        sectionModulus = momentOfInertia / (heightM / 2)
-        break
-      case "C Channel":
-        area = 2 * flangeWidthM * flangeThicknessM + (heightM - 2 * flangeThicknessM) * webThicknessM
-        const I_flange_c =
-          (flangeWidthM * Math.pow(flangeThicknessM, 3)) / 12 +
-          flangeWidthM * flangeThicknessM * Math.pow((heightM - flangeThicknessM) / 2, 2)
-        const I_web_c = (webThicknessM * Math.pow(heightM - 2 * flangeThicknessM, 3)) / 12
-        momentOfInertia = 2 * I_flange_c + I_web_c
-        sectionModulus = momentOfInertia / (heightM / 2)
-        break
-      case "Circular":
-        area = Math.PI * Math.pow(diameterM / 2, 2)
-        momentOfInertia = (Math.PI * Math.pow(diameterM, 4)) / 64
-        sectionModulus = momentOfInertia / (diameterM / 2)
-        break
-      default:
-        area = widthM * heightM
-        momentOfInertia = (widthM * Math.pow(heightM, 3)) / 12
-        sectionModulus = momentOfInertia / (heightM / 2)
-    }
-
-    // Calculate stresses (recalculated after multispan may update max moment / shear)
-    let maxNormalStress = 0
-    let maxShearStress = 0
-    let safetyFactor = 0
+    const sectionProps = computeSectionProperties(beamCrossSection, {
+      widthM,
+      heightM,
+      flangeWidthM,
+      flangeThicknessM,
+      webThicknessM,
+      diameterM,
+    })
+    const { momentOfInertia, sectionModulus } = sectionProps
 
     // Calculate deflection
     const E = materialProps.elasticModulus * 1e9 // Convert GPa to Pa
     let maxDeflection = 0
     if (analysisType === "Simple Beam") {
-      maxDeflection =
-        E > 0 ? (5 * totalAppliedLoad * Math.pow(beamLengthM, 3)) / (384 * E * momentOfInertia) : 0
+      if (momentOfInertia > 0) {
+        const simpleBeam = analyzeSimpleBeam(
+          validBeamLength,
+          leftSupport,
+          rightSupport,
+          loads,
+          E,
+          momentOfInertia
+        )
+        simpleBeamMaxDeflectionM = simpleBeam.maxDeflectionM
+        maxShearForce = simpleBeam.maxShearN
+        maxBendingMoment = simpleBeam.maxMomentNm
+        longitudinalBendingMoment = maxBendingMoment
+      }
+      maxDeflection = simpleBeamMaxDeflectionM
     } else if (E > 0) {
       const multispan =
         multispanLineSegments.length > 0
@@ -553,19 +462,24 @@ export function useBeamCalculations(params: UseBeamCalculationsParams) {
         : uniformDeflection
     }
 
-    maxNormalStress = sectionModulus > 0 ? maxBendingMoment / sectionModulus / 1e6 : 0
-    maxShearStress = area > 0 ? (1.5 * maxShearForce) / area / 1e6 : 0
-    safetyFactor =
-      materialProps.yieldStrength > 0 && maxNormalStress > 0
-        ? materialProps.yieldStrength / maxNormalStress
-        : 0
+    const stressSafety = computeStressAndSafety(
+      maxBendingMoment,
+      maxShearForce,
+      materialProps.yieldStrength,
+      beamCrossSection,
+      sectionProps,
+      webThicknessM
+    )
 
     setResults({
       maxShearForce: Number(maxShearForce.toFixed(2)),
       maxBendingMoment: Number(maxBendingMoment.toFixed(2)),
-      maxNormalStress: Number(maxNormalStress.toFixed(2)),
-      maxShearStress: Number(maxShearStress.toFixed(2)),
-      safetyFactor: Number(safetyFactor.toFixed(2)),
+      maxNormalStress: Number(stressSafety.maxNormalStressMPa.toFixed(2)),
+      maxShearStress: Number(stressSafety.maxShearStressMPa.toFixed(2)),
+      safetyFactor: Number(stressSafety.safetyFactor.toFixed(2)),
+      safetyFactorBending: Number(stressSafety.safetyFactorBending.toFixed(2)),
+      safetyFactorShear: Number(stressSafety.safetyFactorShear.toFixed(2)),
+      safetyFactorGoverning: stressSafety.safetyFactorGoverning,
       totalBeams: totalBeams,
       loadPerBeam: Number(loadPerBeam.toFixed(2)),
       momentOfInertia: Number(momentOfInertia.toFixed(6)),

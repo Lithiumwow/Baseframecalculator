@@ -37,12 +37,14 @@ import { processWeightSheets, processWeightTablePaste, type COGResult } from "..
 import { isSystemairWeightTableText } from "../utils/weightTableParser"
 import { calculateCOG, buildCOGItemsFromImport } from "../utils/cogCalculation"
 import type { WeightAuditBreakdown } from "../utils/weightAudit"
+import { parseDxfSections, readDxfFile } from "../utils/dxfSectionImport"
 
 export interface WeightImportResult {
   sections: Section[]
   loads: Load[]
   frameLength?: number
   frameWidth?: number
+  genioxType?: string
   totalRoofWeight?: number
   totalRoofWeightUnit?: "N" | "kg" | "lbs"
   cog?: COGResult
@@ -50,6 +52,7 @@ export interface WeightImportResult {
   unitTotalLb?: number
   otherComponentsLb?: number
   weightAudit?: WeightAuditBreakdown
+  warnings?: string[]
 }
 
 interface WeightImportDialogProps {
@@ -67,7 +70,7 @@ export function WeightImportDialog({
 }: WeightImportDialogProps) {
   const [open, setOpen] = useState(false)
   const [importText, setImportText] = useState("")
-  const [importType, setImportType] = useState<"json" | "csv" | "table" | "ocr">("ocr")
+  const [importType, setImportType] = useState<"json" | "csv" | "table" | "ocr" | "dxf">("ocr")
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<WeightImportResult | null>(null)
   const [isProcessingOCR, setIsProcessingOCR] = useState(false)
@@ -76,6 +79,7 @@ export function WeightImportDialog({
   const [layoutImage, setLayoutImage] = useState<File | null>(null)
   const [weightsImage, setWeightsImage] = useState<File | null>(null)
   const [pastedWeightText, setPastedWeightText] = useState("")
+  const [dxfFileName, setDxfFileName] = useState<string | null>(null)
 
   const resetImportForm = () => {
     setImportText("")
@@ -88,6 +92,7 @@ export function WeightImportDialog({
     setLayoutImage(null)
     setWeightsImage(null)
     setPastedWeightText("")
+    setDxfFileName(null)
   }
 
   useEffect(() => {
@@ -225,12 +230,49 @@ export function WeightImportDialog({
     }
   }
 
+  const buildPreviewFromDxf = (dxfText: string): WeightImportResult => {
+    const parsed = parseDxfSections(dxfText)
+    const previewResult = buildPreviewFromImportData(parsed.importData)
+    previewResult.genioxType = parsed.genioxType != null ? String(parsed.genioxType) : undefined
+    previewResult.warnings = parsed.warnings
+    previewResult.importJson = JSON.stringify(parsed.importData, null, 2)
+    previewResult.loads = []
+    return previewResult
+  }
+
+  const handleDxfUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    try {
+      setError(null)
+      setPreview(null)
+      setIsProcessingOCR(true)
+      setOcrStage("Reading DXF...")
+      setDxfFileName(file.name)
+      const text = await readDxfFile(file)
+      setImportText(JSON.stringify(parseDxfSections(text).importData, null, 2))
+      setPreview(buildPreviewFromDxf(text))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to parse DXF")
+      setPreview(null)
+    } finally {
+      setIsProcessingOCR(false)
+      setOcrStage("")
+    }
+  }
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
 
     if (file.type.startsWith("image/")) {
       setError("For OCR, use the Layout and Weights upload fields below.")
+      return
+    }
+
+    if (importType === "dxf" || file.name.toLowerCase().endsWith(".dxf")) {
+      await handleDxfUpload(event)
       return
     }
 
@@ -247,6 +289,26 @@ export function WeightImportDialog({
   const handleParse = async () => {
     try {
       setError(null)
+
+      if (importType === "dxf") {
+        if (!importText.trim()) {
+          setError("Upload a .dxf file first")
+          return
+        }
+        // importText holds generated JSON after DXF upload; re-parse that JSON
+        try {
+          const importData = parseWeightImportJSON(importText)
+          const result = buildPreviewFromImportData(importData)
+          result.loads = []
+          result.warnings = [
+            "DXF import creates empty casing sections (geometry only). Import a weight table afterward for loads.",
+          ]
+          setPreview(result)
+        } catch {
+          setPreview(buildPreviewFromDxf(importText))
+        }
+        return
+      }
 
       if (
         (importType === "table" || importType === "ocr") &&
@@ -345,7 +407,7 @@ export function WeightImportDialog({
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
             <Label>Format:</Label>
-            {(["json", "csv", "table", "ocr"] as const).map((type) => (
+            {(["json", "csv", "table", "ocr", "dxf"] as const).map((type) => (
               <Button
                 key={type}
                 variant={importType === type ? "default" : "outline"}
@@ -355,11 +417,12 @@ export function WeightImportDialog({
                   setImportText("")
                   setPreview(null)
                   setError(null)
+                  setDxfFileName(null)
                 }}
-                className={type === "ocr" ? "flex items-center gap-1" : undefined}
+                className={type === "ocr" || type === "dxf" ? "flex items-center gap-1" : undefined}
               >
                 {type === "ocr" && <ImageIcon className="w-4 h-4" />}
-                {type === "ocr" ? "OCR Sheets" : type.toUpperCase()}
+                {type === "ocr" ? "OCR Sheets" : type === "dxf" ? "DXF" : type.toUpperCase()}
               </Button>
             ))}
             <Button variant="outline" size="sm" onClick={handleDownloadTemplate} className="ml-auto">
@@ -367,6 +430,34 @@ export function WeightImportDialog({
               Template
             </Button>
           </div>
+
+          {importType === "dxf" && (
+            <div className="space-y-4 border rounded-lg p-4 bg-gray-50">
+              <p className="text-xs text-muted-foreground">
+                Upload a Systemair / Geniox 3D DXF to create empty casing sections from module geometry.
+                Weights are not in the DXF — import a weight table afterward.
+              </p>
+              <div>
+                <Label htmlFor="dxf-upload">DXF file</Label>
+                <input
+                  id="dxf-upload"
+                  type="file"
+                  accept=".dxf,image/vnd.dxf,application/dxf,text/plain"
+                  onChange={handleDxfUpload}
+                  className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {dxfFileName && (
+                  <p className="text-xs text-green-600 mt-1">✓ {dxfFileName}</p>
+                )}
+              </div>
+              {isProcessingOCR && (
+                <p className="text-sm text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {ocrStage || "Parsing DXF..."}
+                </p>
+              )}
+            </div>
+          )}
 
           {importType === "ocr" && (
             <div className="space-y-4 border rounded-lg p-4 bg-gray-50">
@@ -472,7 +563,7 @@ Weight of unit 1134`}
             </div>
           )}
 
-          {importType !== "ocr" && (
+          {importType !== "ocr" && importType !== "dxf" && (
             <div>
               <Label htmlFor="file-upload">Upload File:</Label>
               <input
@@ -489,7 +580,9 @@ Weight of unit 1134`}
 
           <div>
             <Label htmlFor="import-text">
-              {importType === "ocr" ? "Generated JSON (editable):" : "Or Paste Data:"}
+              {importType === "ocr" || importType === "dxf"
+                ? "Generated JSON (editable):"
+                : "Or Paste Data:"}
             </Label>
             <Textarea
               id="import-text"
@@ -504,6 +597,8 @@ Weight of unit 1134`}
                   ? "Paste JSON data here..."
                   : importType === "ocr"
                   ? "JSON will appear here after OCR processing..."
+                  : importType === "dxf"
+                  ? "JSON will appear here after DXF parsing..."
                   : importType === "table"
                   ? `Paste Systemair weight table here, e.g.:
 1 Casing Length 37.0 in 357
@@ -518,7 +613,7 @@ Weight of unit 1134`
             />
           </div>
 
-          {importType !== "ocr" && (
+          {importType !== "ocr" && importType !== "dxf" && (
             <Button
               onClick={handleParse}
               className="w-full"
@@ -526,6 +621,13 @@ Weight of unit 1134`
             >
               <FileText className="w-4 h-4 mr-2" />
               {isProcessingOCR ? "Parsing..." : "Parse Data"}
+            </Button>
+          )}
+
+          {importType === "dxf" && importText && !preview && (
+            <Button onClick={handleParse} className="w-full" variant="outline">
+              <FileText className="w-4 h-4 mr-2" />
+              Re-parse Edited JSON
             </Button>
           )}
 
@@ -573,7 +675,31 @@ Weight of unit 1134`
                   <div>
                     <strong>{preview.sections.length}</strong> section(s),{" "}
                     <strong>{preview.loads.length}</strong> component load(s)
+                    {preview.genioxType ? (
+                      <>
+                        {" "}
+                        · Geniox <strong>{preview.genioxType}</strong>
+                      </>
+                    ) : null}
                   </div>
+                  {preview.sections.length > 0 && (
+                    <ul className="list-disc list-inside text-xs text-muted-foreground">
+                      {preview.sections.map((s) => (
+                        <li key={s.id}>
+                          {s.name || "Section"}: {Math.round(s.startPosition)}–
+                          {Math.round(s.endPosition)} mm (
+                          {Math.round(s.endPosition - s.startPosition)} mm)
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {preview.warnings && preview.warnings.length > 0 && (
+                    <ul className="mt-1 list-disc list-inside text-xs text-amber-700">
+                      {preview.warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
+                  )}
 
                   {preview.weightAudit && preview.unitTotalLb && preview.unitTotalLb > 0 && (
                     <div

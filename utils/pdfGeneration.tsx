@@ -402,7 +402,21 @@ export async function generatePDF(params: PDFGenerationParams): Promise<void> {
     ["Maximum Shear Force", `${results.maxShearForce.toFixed(1)}`, "N"],
     ["Maximum Bending Moment", `${results.maxBendingMoment.toFixed(1)}`, "N·m"],
     ["Maximum Normal Stress", `${results.maxNormalStress.toFixed(1)}`, "MPa"],
-    ["Safety Factor", `${results.safetyFactor.toFixed(2)}`, "-"],
+    ["Maximum Shear Stress", `${results.maxShearStress.toFixed(1)}`, "MPa"],
+    [
+      "Safety Factor (governing)",
+      `${results.safetyFactor.toFixed(2)}${
+        results.safetyFactorGoverning && results.safetyFactorGoverning !== "none"
+          ? ` [${results.safetyFactorGoverning}]`
+          : ""
+      }`,
+      "-",
+    ],
+    [
+      "SF bending / shear",
+      `${(results.safetyFactorBending ?? 0).toFixed(2)} / ${(results.safetyFactorShear ?? 0).toFixed(2)}`,
+      "-",
+    ],
     ["Maximum Deflection", `${(results.maxDeflection * 1000).toFixed(2)}`, "mm"],
   ]
 

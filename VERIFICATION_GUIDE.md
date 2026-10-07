@@ -15,6 +15,12 @@ This guide helps you verify that the shear force, bending moment, and deflection
   - For a simple beam: Moments about any point should balance
   - Check: At supports, the bending moment should be zero (or very close to zero)
 
+### Safety Factor
+- **Governing SF** = min(F_y/σ, (F_y/√3)/τ)
+- Shear stress by section: rectangle 1.5V/A, circle (4/3)V/A, I/C channel V/(t_w·h_web)
+- Distributed loads on simple beams are included as UDL segments (same solver as diagrams)
+- Distributed footprints on the base frame are centered on frame width for corner reactions
+
 ## 2. Shear Force Diagram Verification
 
 ### Expected Behavior:

@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import dynamic from "next/dynamic"
 import type React from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -42,10 +43,22 @@ import {
 } from "./utils/calculatorDefaults"
 import { GENIOX_TYPES, getGenioxFrameWidth } from "./utils/genioxDimensions"
 
+const Frame3DViewer = dynamic(
+  () => import("./components/Frame3DViewer").then((m) => m.Frame3DViewer),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-[420px] flex items-center justify-center text-sm text-gray-500 border border-gray-200 rounded-lg bg-gray-50">
+        Loading 3D frame viewer…
+      </div>
+    ),
+  }
+)
+
 // All components are now imported from modules - no local definitions needed
 
 export default function BeamLoadCalculator() {
-  const [analysisType, setAnalysisType] = useState("Simple Beam")
+  const [analysisType, setAnalysisType] = useState<"Simple Beam" | "Base Frame">("Simple Beam")
   const [beamType, setBeamType] = useState("Simple Beam")
   const [beamCrossSection, setBeamCrossSection] = useState("C Channel")
   const [beamLength, setBeamLength] = useState(1000)
@@ -71,24 +84,30 @@ export default function BeamLoadCalculator() {
   const [totalRoofWeight, setTotalRoofWeight] = useState(0) // Total roof weight for entire frame (kg)
   const [totalRoofWeightUnit, setTotalRoofWeightUnit] = useState<"N" | "kg" | "lbs">("kg")
   const [genioxType, setGenioxType] = useState<string>(DEFAULT_CALCULATOR_VALUES.genioxType)
-  const [results, setResults] = useState({
+  const [results, setResults] = useState<Results>({
     maxShearForce: 0,
     maxBendingMoment: 0,
     maxNormalStress: 0,
     maxShearStress: 0,
     safetyFactor: 0,
+    safetyFactorBending: 0,
+    safetyFactorShear: 0,
+    safetyFactorGoverning: "none",
     totalBeams: 0,
     loadPerBeam: 0,
     momentOfInertia: 0,
     sectionModulus: 0,
     cornerReactionForce: 0,
-    cornerReactions: { R1: 0, R2: 0, R3: 0, R4: 0 }, // Individual corner reactions
+    cornerReactions: { R1: 0, R2: 0, R3: 0, R4: 0 },
     maxDeflection: 0,
     totalAppliedLoad: 0,
     longitudinalBendingMoment: 0,
     transverseBendingMoment: 0,
     governingBeamDirection: "longitudinal",
     governingBeamSpanMm: 0,
+    legSupportPositionsMm: [],
+    usedMultispanAnalysis: false,
+    liftingAnalysis: null,
   })
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false)
   const [cogResult, setCogResult] = useState<COGResult | null>(null)
@@ -166,8 +185,16 @@ export default function BeamLoadCalculator() {
 
   const applyWeightImport = (result: WeightImportResult) => {
     resetCalculator(true)
+    // Imports that create sections are Base Frame workflows
+    if (result.sections.length > 0) {
+      setAnalysisType("Base Frame")
+      setBeamType("Base Frame")
+    }
     if (result.frameLength) setFrameLength(result.frameLength)
-    const typeNum = parseInt(genioxType, 10)
+    if (result.genioxType) {
+      setGenioxType(result.genioxType)
+    }
+    const typeNum = parseInt(result.genioxType || genioxType, 10)
     if (!Number.isNaN(typeNum)) {
       setFrameWidth(getGenioxFrameWidth(typeNum))
     } else if (result.frameWidth) {
@@ -495,7 +522,9 @@ export default function BeamLoadCalculator() {
       const savedState = localStorage.getItem(CALCULATOR_STORAGE_KEY)
       if (savedState) {
         const state = JSON.parse(savedState)
-        if (state.analysisType) setAnalysisType(state.analysisType)
+        if (state.analysisType === "Simple Beam" || state.analysisType === "Base Frame") {
+          setAnalysisType(state.analysisType)
+        }
         if (state.beamLength) setBeamLength(state.beamLength)
         if (state.frameLength) setFrameLength(state.frameLength)
         if (state.leftSupport !== undefined) setLeftSupport(state.leftSupport)
@@ -810,7 +839,10 @@ export default function BeamLoadCalculator() {
                 <BarChart3 className="w-4 h-4 text-gray-500" />
                 Analysis Type
               </Label>
-              <Select value={analysisType} onValueChange={setAnalysisType}>
+              <Select
+                value={analysisType}
+                onValueChange={(v) => setAnalysisType(v as "Simple Beam" | "Base Frame")}
+              >
                 <SelectTrigger id="analysis-type">
                   <SelectValue placeholder="Select" />
                 </SelectTrigger>
@@ -1877,6 +1909,14 @@ export default function BeamLoadCalculator() {
               <div className="text-center p-4 bg-red-50 rounded-lg border border-red-200">
                 <div className="text-2xl font-bold text-red-600">{results.safetyFactor}</div>
                 <div className="text-sm text-gray-600">Safety Factor</div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {results.safetyFactorGoverning && results.safetyFactorGoverning !== "none"
+                    ? `Governing: ${results.safetyFactorGoverning}`
+                    : "min(bending, shear)"}
+                  {results.safetyFactorBending != null && results.safetyFactorShear != null
+                    ? ` · B ${results.safetyFactorBending} / S ${results.safetyFactorShear}`
+                    : ""}
+                </div>
               </div>
               <div className="text-center p-4 bg-indigo-50 rounded-lg border border-indigo-200">
                 <div className="text-2xl font-bold text-indigo-600">{(results.maxDeflection * 1000).toFixed(3)}</div>
@@ -2085,6 +2125,32 @@ export default function BeamLoadCalculator() {
             )}
           </CardContent>
         </Card>
+
+        {/* 3D Baseframe viewer (parametric — uses your loads & moment diagram) */}
+        {analysisType === "Base Frame" && (
+          <Card className="mb-6 shadow-sm border-gray-200">
+            <CardHeader className="pb-4 border-b border-gray-100">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Package className="w-5 h-5 text-indigo-600" />
+                3D Baseframe Load View
+              </CardTitle>
+              <CardDescription className="text-sm">
+                Frame rails show high/low bending from the analysis of your current loads and sections.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-6">
+              <Frame3DViewer
+                frameLength={frameLength}
+                frameWidth={frameWidth}
+                sections={sections}
+                loads={loads}
+                results={results}
+                bendingMomentData={bendingMomentData}
+                cog={cogResult}
+              />
+            </CardContent>
+          </Card>
+        )}
 
         {/* Corner Loads Diagram (for Base Frame only) */}
         {analysisType === "Base Frame" && (

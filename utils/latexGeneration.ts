@@ -202,7 +202,9 @@ Total Applied Load: \\SI{${formatNumber(results.totalAppliedLoad, 1)}}{\\newton}
 Maximum Shear Force & ${formatNumber(results.maxShearForce, 1)} & \\si{\\newton} \\\\
 Maximum Bending Moment & ${formatNumber(results.maxBendingMoment, 1)} & \\si{\\newton\\meter} \\\\
 Maximum Normal Stress & ${formatNumber(results.maxNormalStress, 1)} & \\si{\\mega\\pascal} \\\\
-Safety Factor & ${formatNumber(results.safetyFactor, 2)} & -- \\\\
+Maximum Shear Stress & ${formatNumber(results.maxShearStress, 1)} & \\si{\\mega\\pascal} \\\\
+Safety Factor (governing) & ${formatNumber(results.safetyFactor, 2)} & -- \\\\
+SF bending / shear & ${formatNumber(results.safetyFactorBending ?? 0, 2)} / ${formatNumber(results.safetyFactorShear ?? 0, 2)} & -- \\\\
 Maximum Deflection & ${formatNumber(results.maxDeflection * 1000, 2)} & \\si{\\milli\\meter} \\\\
 `
 
