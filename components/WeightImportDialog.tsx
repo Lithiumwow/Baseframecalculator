@@ -238,13 +238,20 @@ export function WeightImportDialog({
   const buildPreviewFromDxf = (dxfText: string, fileName?: string): WeightImportResult => {
     const parsed = parseDxfSections(dxfText)
     const mesh = extractDxfMesh(dxfText, fileName)
+    if (mesh) {
+      // Align mesh to the same X=0 origin as imported sections (first module)
+      if (parsed.modules[0]) {
+        mesh.frameOriginXMm = parsed.modules[0].minX
+      }
+      mesh.frameCenterYMm = (mesh.bounds.minY + mesh.bounds.maxY) / 2
+    }
     setPendingDxfMesh(mesh)
     const previewResult = buildPreviewFromImportData(parsed.importData)
     previewResult.genioxType = parsed.genioxType != null ? String(parsed.genioxType) : undefined
     previewResult.warnings = [...(parsed.warnings || [])]
     if (mesh) {
       previewResult.warnings.push(
-        `Casing mesh ready for 3D view: ${mesh.triangleCount.toLocaleString()} triangles from 3DFACE entities.`
+        `Casing mesh ready for 3D view: ${mesh.triangleCount.toLocaleString()} triangles (includes baseframe — parametric beams hidden).`
       )
     } else {
       previewResult.warnings.push(

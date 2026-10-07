@@ -18,20 +18,29 @@ export interface Frame3DViewerProps {
   results: Results
   bendingMomentData: Array<{ x: number; y: number | null }>
   cog?: COGResult | null
-  /** DXF 3DFACE casing mesh (mm, Z-up). When set, replaces flat section boxes. */
+  /**
+   * DXF 3DFACE unit mesh (mm, Z-up). Includes casing + baseframe — when set,
+   * parametric beams are not drawn.
+   */
   casingMesh?: DxfCasingMesh | null
   className?: string
 }
 
-/** Convert DXF mm Z-up positions into frame meters (Y-up): X→X, Z→Y, Y→Z. */
-function dxfPositionsToFrameMeters(mesh: DxfCasingMesh, beamH: number): Float32Array {
+/**
+ * Convert DXF mm Z-up → frame meters Y-up.
+ * X uses section/frame origin (not raw mesh minX). Bottom of mesh sits on Y=0
+ * (DXF already contains the baseframe — do not lift onto synthetic beams).
+ */
+function dxfPositionsToFrameMeters(mesh: DxfCasingMesh, frameWidthM: number): Float32Array {
   const { positions, bounds } = mesh
   const out = new Float32Array(positions.length)
   const s = 0.001
+  const originX = mesh.frameOriginXMm ?? bounds.minX
+  const centerY = mesh.frameCenterYMm ?? (bounds.minY + bounds.maxY) / 2
   for (let i = 0; i < positions.length; i += 3) {
-    out[i] = (positions[i] - bounds.minX) * s
-    out[i + 1] = (positions[i + 2] - bounds.minZ) * s + beamH
-    out[i + 2] = (positions[i + 1] - bounds.minY) * s
+    out[i] = (positions[i] - originX) * s
+    out[i + 1] = (positions[i + 2] - bounds.minZ) * s
+    out[i + 2] = (positions[i + 1] - centerY) * s + frameWidthM / 2
   }
   return out
 }
@@ -153,23 +162,19 @@ export function Frame3DViewer({
 
     const L = Math.max(frameLength, 1) / 1000
     const W = Math.max(frameWidth, 1) / 1000
-    const beamH = 0.08
+    const hasDxfMesh = casingMesh != null && casingMesh.positions.length >= 9
+    const beamH = hasDxfMesh ? 0 : 0.08
     const beamT = 0.04
-    const meshH =
-      casingMesh != null
-        ? Math.max(0.15, (casingMesh.bounds.maxZ - casingMesh.bounds.minZ) * 0.001)
-        : 0
-    const meshLen =
-      casingMesh != null ? (casingMesh.bounds.maxX - casingMesh.bounds.minX) * 0.001 : L
-    const meshWid =
-      casingMesh != null ? (casingMesh.bounds.maxY - casingMesh.bounds.minY) * 0.001 : W
-    const casingH = casingMesh != null ? meshH : 0.35
-    const spanX = Math.max(L, meshLen)
-    const spanZ = Math.max(W, meshWid)
-    const contentTop = beamH + casingH + 0.55 // include load arrows
-    const contentBottom = -0.45 // reactions below
+    const meshH = hasDxfMesh
+      ? Math.max(0.15, (casingMesh!.bounds.maxZ - casingMesh!.bounds.minZ) * 0.001)
+      : 0
+    const casingH = hasDxfMesh ? meshH : 0.35
+    // Analysis footprint (loads / reactions / COG use these)
+    const spanX = L
+    const spanZ = W
+    const contentTop = beamH + casingH + 0.55
+    const contentBottom = -0.45
 
-    // Model built in +X/+Z space, then shifted so its center sits at world origin
     const modelCenter = new THREE.Vector3(spanX / 2, (contentTop + contentBottom) / 2, spanZ / 2)
     const size = new THREE.Vector3(spanX, contentTop - contentBottom, spanZ)
     const radius = Math.max(size.length() * 0.55, 0.4)
@@ -250,87 +255,51 @@ export function Frame3DViewer({
     const contour = buildMomentContour(bendingMomentData, frameLength, 40, loadPeaks)
     const segCount = Math.max(8, contour.length - 1)
 
-    const addBeamSegment = (x0: number, x1: number, z: number, intensity: number) => {
-      const len = Math.max(0.001, x1 - x0)
-      const [r, g, b] = intensityToRgb(intensity)
-      const mat = new THREE.MeshLambertMaterial({
-        color: new THREE.Color(r / 255, g / 255, b / 255),
-      })
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(len, beamH, beamT), mat)
-      mesh.position.set((x0 + x1) / 2, beamH / 2, z)
-      root.add(mesh)
-    }
-
-    for (let i = 0; i < segCount; i++) {
-      const c0 = contour[i] ?? { xMm: (frameLength * i) / segCount, intensity: 0 }
-      const c1 = contour[i + 1] ?? {
-        xMm: (frameLength * (i + 1)) / segCount,
-        intensity: c0.intensity,
-      }
-      const intensity = (c0.intensity + c1.intensity) / 2
-      addBeamSegment(c0.xMm / 1000, c1.xMm / 1000, beamT / 2, intensity)
-      addBeamSegment(c0.xMm / 1000, c1.xMm / 1000, W - beamT / 2, intensity)
-    }
-
-    const endMat = new THREE.MeshLambertMaterial({ color: 0x64748b })
-    for (const x of [beamT / 2, L - beamT / 2]) {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(beamT, beamH, W), endMat)
-      mesh.position.set(x, beamH / 2, W / 2)
-      root.add(mesh)
-    }
-
-    const crossXs = new Set<number>([0, frameLength])
-    sections.forEach((s, idx) => {
-      if (idx > 0) crossXs.add(s.startPosition)
-      crossXs.add(s.endPosition)
-    })
-    ;(results.legSupportPositionsMm || []).forEach((p) => crossXs.add(p))
-    const crossMat = new THREE.MeshLambertMaterial({ color: 0x475569 })
-    for (const xmm of crossXs) {
-      if (xmm <= 0 || xmm >= frameLength) continue
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(beamT * 0.8, beamH * 0.85, W), crossMat)
-      mesh.position.set(xmm / 1000, beamH / 2, W / 2)
-      root.add(mesh)
-    }
-
-    if (casingMesh && casingMesh.positions.length >= 9) {
-      const worldPos = dxfPositionsToFrameMeters(casingMesh, beamH)
-      const colors = new Float32Array(worldPos.length)
-      for (let i = 0; i < worldPos.length; i += 9) {
-        const cxMm = ((worldPos[i] + worldPos[i + 3] + worldPos[i + 6]) / 3) * 1000
-        const intensity = sampleContourIntensity(contour, cxMm)
+    // Parametric rails only when there is no DXF (DXF already includes the baseframe)
+    if (!hasDxfMesh) {
+      const addBeamSegment = (x0: number, x1: number, z: number, intensity: number) => {
+        const len = Math.max(0.001, x1 - x0)
         const [r, g, b] = intensityToRgb(intensity)
-        for (let v = 0; v < 3; v++) {
-          const o = i + v * 3
-          colors[o] = r / 255
-          colors[o + 1] = g / 255
-          colors[o + 2] = b / 255
-        }
+        const mat = new THREE.MeshLambertMaterial({
+          color: new THREE.Color(r / 255, g / 255, b / 255),
+        })
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(len, beamH, beamT), mat)
+        mesh.position.set((x0 + x1) / 2, beamH / 2, z)
+        root.add(mesh)
       }
-      const geo = new THREE.BufferGeometry()
-      geo.setAttribute("position", new THREE.BufferAttribute(worldPos, 3))
-      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3))
-      geo.computeVertexNormals()
-      const solid = new THREE.Mesh(
-        geo,
-        new THREE.MeshLambertMaterial({
-          vertexColors: true,
-          side: THREE.DoubleSide,
-          transparent: true,
-          opacity: 0.88,
-        })
-      )
-      const wire = new THREE.Mesh(
-        geo,
-        new THREE.MeshBasicMaterial({
-          color: 0x94a3b8,
-          wireframe: true,
-          transparent: true,
-          opacity: 0.18,
-        })
-      )
-      root.add(solid, wire)
-    } else {
+
+      for (let i = 0; i < segCount; i++) {
+        const c0 = contour[i] ?? { xMm: (frameLength * i) / segCount, intensity: 0 }
+        const c1 = contour[i + 1] ?? {
+          xMm: (frameLength * (i + 1)) / segCount,
+          intensity: c0.intensity,
+        }
+        const intensity = (c0.intensity + c1.intensity) / 2
+        addBeamSegment(c0.xMm / 1000, c1.xMm / 1000, beamT / 2, intensity)
+        addBeamSegment(c0.xMm / 1000, c1.xMm / 1000, W - beamT / 2, intensity)
+      }
+
+      const endMat = new THREE.MeshLambertMaterial({ color: 0x64748b })
+      for (const x of [beamT / 2, L - beamT / 2]) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(beamT, beamH, W), endMat)
+        mesh.position.set(x, beamH / 2, W / 2)
+        root.add(mesh)
+      }
+
+      const crossXs = new Set<number>([0, frameLength])
+      sections.forEach((s, idx) => {
+        if (idx > 0) crossXs.add(s.startPosition)
+        crossXs.add(s.endPosition)
+      })
+      ;(results.legSupportPositionsMm || []).forEach((p) => crossXs.add(p))
+      const crossMat = new THREE.MeshLambertMaterial({ color: 0x475569 })
+      for (const xmm of crossXs) {
+        if (xmm <= 0 || xmm >= frameLength) continue
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(beamT * 0.8, beamH * 0.85, W), crossMat)
+        mesh.position.set(xmm / 1000, beamH / 2, W / 2)
+        root.add(mesh)
+      }
+
       sections.forEach((section, index) => {
         const x0 = section.startPosition / 1000
         const x1 = section.endPosition / 1000
@@ -353,22 +322,63 @@ export function Frame3DViewer({
         edge.position.set(x0, beamH + casingH / 2, W / 2)
         root.add(edge)
       })
+    } else {
+      const worldPos = dxfPositionsToFrameMeters(casingMesh!, W)
+      const colors = new Float32Array(worldPos.length)
+      for (let i = 0; i < worldPos.length; i += 9) {
+        const cxMm = ((worldPos[i] + worldPos[i + 3] + worldPos[i + 6]) / 3) * 1000
+        const intensity = sampleContourIntensity(contour, cxMm)
+        const [r, g, b] = intensityToRgb(intensity)
+        for (let v = 0; v < 3; v++) {
+          const o = i + v * 3
+          colors[o] = r / 255
+          colors[o + 1] = g / 255
+          colors[o + 2] = b / 255
+        }
+      }
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute("position", new THREE.BufferAttribute(worldPos, 3))
+      geo.setAttribute("color", new THREE.BufferAttribute(colors, 3))
+      geo.computeVertexNormals()
+      const solid = new THREE.Mesh(
+        geo,
+        new THREE.MeshLambertMaterial({
+          vertexColors: true,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.9,
+        })
+      )
+      const wire = new THREE.Mesh(
+        geo,
+        new THREE.MeshBasicMaterial({
+          color: 0x64748b,
+          wireframe: true,
+          transparent: true,
+          opacity: 0.12,
+        })
+      )
+      root.add(solid, wire)
+
+      // Light section-boundary markers (not solid walls)
+      sections.forEach((section, index) => {
+        if (index === 0) return
+        const x0 = section.startPosition / 1000
+        const marker = new THREE.Mesh(
+          new THREE.BoxGeometry(0.006, Math.max(0.08, casingH * 0.35), W * 0.92),
+          new THREE.MeshBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.2 })
+        )
+        marker.position.set(x0, casingH * 0.35, W / 2)
+        root.add(marker)
+      })
     }
 
     sections.forEach((section, index) => {
-      const x0 = section.startPosition / 1000
-      const x1 = section.endPosition / 1000
-      const midX = (x0 + x1) / 2
-      if (casingMesh) {
-        const edge = new THREE.Mesh(
-          new THREE.BoxGeometry(0.01, Math.max(0.12, casingH * 0.85), spanZ * 0.98),
-          new THREE.MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.28 })
-        )
-        edge.position.set(x0, beamH + casingH * 0.45, spanZ / 2)
-        root.add(edge)
-      }
+      const midX = (section.startPosition + section.endPosition) / 2 / 1000
       const label = makeLabelSprite(section.name || `Section ${index + 1}`)
-      label.position.set(midX, beamH + casingH + 0.14, spanZ / 2)
+      // Stagger slightly in Z so labels don't stack when sections are short
+      const zOff = ((index % 3) - 1) * 0.12
+      label.position.set(midX, beamH + casingH + 0.16, W / 2 + zOff)
       root.add(label)
     })
 
@@ -573,19 +583,17 @@ export function Frame3DViewer({
         <div className="text-sm text-gray-600 max-w-xl">
           {hasMesh ? (
             <>
-              DXF casing mesh ({casingMesh!.triangleCount.toLocaleString()} triangles) tinted by
-              bending moment. Rails show the same contour. Red arrows = component loads (down);
-              thin red pad = distributed-load footprint (not DXF). Amber = casing weight. Green =
-              corner <em>support reactions</em> (up)
-              {cog ? ". Orange = COG" : ""}.
+              DXF unit mesh ({casingMesh!.triangleCount.toLocaleString()} triangles) — includes
+              casing and baseframe; parametric beams are hidden. Tint = bending moment. Red arrows
+              = loads; amber = casing weight; green = corner <em>support reactions</em>
+              {cog ? "; orange = COG" : ""}.
             </>
           ) : (
             <>
               Parametric baseframe: rails colored by bending moment. Translucent boxes = sections
-              (import a Geniox DXF to show the real casing mesh). Red arrows = loads (down); thin
-              red pad = distributed-load footprint. Amber = casing weight. Green = corner{" "}
-              <em>support reactions</em> (up)
-              {cog ? ". Orange = COG" : ""}.
+              (import a Geniox DXF to show the real unit mesh). Red arrows = loads; amber = casing
+              weight; green = corner <em>support reactions</em>
+              {cog ? "; orange = COG" : ""}.
             </>
           )}
         </div>

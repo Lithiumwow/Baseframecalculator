@@ -18,6 +18,13 @@ export interface DxfCasingMesh {
   triangleCount: number
   bounds: DxfMeshBounds
   sourceName?: string
+  /**
+   * DXF X (mm) that maps to analysis frame X = 0.
+   * Usually the first casing module minX (same origin as section import).
+   */
+  frameOriginXMm?: number
+  /** DXF Y (mm) centerline that maps to frame width / 2 */
+  frameCenterYMm?: number
 }
 
 function flushFace(
