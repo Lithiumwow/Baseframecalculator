@@ -31,6 +31,8 @@ export interface DxfSectionImportResult {
   warnings: string[]
   /** Overall mesh bounding box size (mm) */
   meshSizeMm: { x: number; y: number; z: number }
+  /** DXF X (mm) that maps to analysis frame X = 0. Left end of the mesh. */
+  frameOriginXMm: number
 }
 
 interface PolyVertex {
@@ -195,43 +197,18 @@ export function parseDxfSections(dxfText: string): DxfSectionImportResult {
     )
   }
 
-  // Shift so first module starts at 0; absorb tiny joint gaps by abutting sections
-  const origin = modulesMm[0].minX
-  const sections: WeightImportSection[] = []
-
-  for (let i = 0; i < modulesMm.length; i++) {
-    const mod = modulesMm[i]
-    const start = roundMm(mod.minX - origin)
-    let end = roundMm(mod.maxX - origin)
-    if (i < modulesMm.length - 1) {
-      const nextStart = roundMm(modulesMm[i + 1].minX - origin)
-      // If gap is a small joint (< 50 mm), extend this section to the next start
-      if (nextStart - end > 0 && nextStart - end < 50) {
-        end = nextStart
-      }
-    }
-    sections.push({
-      name: `Section ${i + 1}`,
-      startPosition: start,
-      endPosition: end,
-      length: roundMm(end - start),
-      casingWeight: 0,
-      casingWeightUnit: "kg",
-      baseframeWeight: 0,
-      baseframeWeightUnit: "kg",
-      roofWeight: 0,
-      roofWeightUnit: "kg",
-    })
-  }
-
+  const meshMinX = toMm(minX)
+  const meshMaxX = toMm(maxX)
+  const sections = sectionsAlongMesh(modulesMm, meshMinX, meshMaxX)
   const frameLengthMm = roundMm(sections[sections.length - 1].endPosition || 0)
+  const frameOriginXMm = roundMm(meshMinX)
   let frameWidthMm = genioxType ? getGenioxFrameWidth(genioxType) : roundMm(meshSizeMm.y)
 
   if (!genioxType) {
     warnings.push("Could not read Geniox type from DXF metadata; frame width uses mesh Y extent.")
   }
   warnings.push(
-    "DXF import creates empty casing sections (geometry only). Import a weight table afterward for loads."
+    "DXF sections follow the casing blocks along the unit. Upload the submittal PDF to fill weights (inches or millimetres)."
   )
 
   const importData: WeightImportData = {
@@ -253,7 +230,55 @@ export function parseDxfSections(dxfText: string): DxfSectionImportResult {
     importData,
     warnings,
     meshSizeMm,
+    frameOriginXMm,
   }
+}
+
+/**
+ * Place sections on the full mesh.
+ * A short bay between two longer full-height bays stays inside the middle section
+ * when a separate end block continues past the last tall side panel (the stepped
+ * module on Geniox layouts). Otherwise each tall side panel is its own section.
+ */
+function sectionsAlongMesh(
+  modules: DxfModuleBox[],
+  meshMinX: number,
+  meshMaxX: number
+): WeightImportSection[] {
+  const last = modules[modules.length - 1]
+  const overhang = meshMaxX - last.maxX
+  const hasTrailingBlock = overhang > 120
+  const empty = (start: number, end: number, index: number): WeightImportSection => {
+    const s = roundMm(start)
+    const e = roundMm(end)
+    return {
+      name: `Section ${index + 1}`,
+      startPosition: s,
+      endPosition: e,
+      length: roundMm(e - s),
+      casingWeight: 0,
+      casingWeightUnit: "kg",
+      baseframeWeight: 0,
+      baseframeWeightUnit: "kg",
+      roofWeight: 0,
+      roofWeightUnit: "kg",
+    }
+  }
+
+  const cuts: number[] = [meshMinX]
+  if (modules.length >= 3 && hasTrailingBlock) {
+    cuts.push((modules[0].maxX + modules[1].minX) / 2)
+    cuts.push(last.maxX + Math.min(50, overhang * 0.08))
+  } else {
+    for (let i = 0; i < modules.length - 1; i++) {
+      cuts.push((modules[i].maxX + modules[i + 1].minX) / 2)
+    }
+    if (hasTrailingBlock) cuts.push(last.maxX + Math.min(50, overhang * 0.08))
+  }
+  cuts.push(meshMaxX)
+
+  const origin = cuts[0]
+  return cuts.slice(0, -1).map((start, i) => empty(start - origin, cuts[i + 1] - origin, i))
 }
 
 function boxFromVertices(verts: PolyVertex[], layer: string): DxfModuleBox | null {

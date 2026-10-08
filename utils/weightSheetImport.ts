@@ -541,8 +541,33 @@ function layoutFromWeightTable(weightTable: ParsedWeightTable): ParsedLayout {
 }
 
 /**
- * Import from pasted Systemair weight table, with optional layout drawing for bay lengths.
+ * Parse a Systemair weights page (inches/lb or mm/kg) into sections and component loads.
+ * When meshLengthMm is the DXF length and it matches the table within 3%, sections are
+ * stretched onto that mesh so the 3D outlines cover the casing.
  */
+export async function importSystemairWeightText(
+  weightText: string,
+  genioxType: number,
+  meshLengthMm?: number
+): Promise<SheetImportResult> {
+  const weightTable = parsePastedWeightTable(weightText)
+  if (isEmptyWeightTable(weightTable)) {
+    throw new Error(
+      "Could not read a Systemair weights table from this page. Expected lines like " +
+        "\"1 Casing Length 33.1 in 351\" or \"1 Casing Length 841 mm 159\"."
+    )
+  }
+  const layout = layoutFromWeightTable(weightTable)
+  return finalizeWeightSheetImport(
+    weightTable,
+    layout,
+    genioxType,
+    weightText,
+    undefined,
+    meshLengthMm
+  )
+}
+
 export async function processWeightTablePaste(
   weightText: string,
   genioxType: number,
@@ -617,12 +642,51 @@ export async function processWeightSheets(
   return finalizeWeightSheetImport(weightTable, layout, genioxType, combinedText || rawText, onProgress)
 }
 
+/** Stretch table sections onto the DXF length when they already describe the same unit. */
+function fitImportDataToMeshLength(data: WeightImportData, targetMm: number): WeightImportData {
+  const sections = data.sections ?? []
+  const current = sections[sections.length - 1]?.endPosition ?? 0
+  if (current <= 0) return data
+  const scale = targetMm / current
+  if (Math.abs(scale - 1) > 0.03) return data
+
+  const round = (n: number) => Math.round(n * 10) / 10
+  const fitted = sections.map((section) => {
+    const start = round(section.startPosition * scale)
+    const end = round((section.endPosition ?? section.startPosition) * scale)
+    return { ...section, startPosition: start, endPosition: end, length: round(end - start) }
+  })
+  if (fitted.length > 0) {
+    const last = fitted[fitted.length - 1]
+    last.endPosition = round(targetMm)
+    last.length = round(last.endPosition - last.startPosition)
+  }
+
+  const components = (data.components ?? []).map((component) => ({
+    ...component,
+    position: round((component.position ?? 0) * scale),
+    loadLength: component.loadLength ? round(component.loadLength * scale) : component.loadLength,
+  }))
+
+  return {
+    ...data,
+    sections: fitted,
+    components,
+    frameDimensions: {
+      ...data.frameDimensions,
+      length: Math.round(targetMm),
+      units: "mm",
+    },
+  }
+}
+
 async function finalizeWeightSheetImport(
   weightTable: ParsedWeightTable,
   layout: ParsedLayout,
   genioxType: number,
   rawText: string,
-  onProgress?: (stage: string, progress: number) => void
+  onProgress?: (stage: string, progress: number) => void,
+  meshLengthMm?: number
 ): Promise<SheetImportResult> {
   let casingLengthsForMerge = layout.casingSectionLengthsIn
   if (casingLengthsForMerge.length < 2 && weightTable.baseframeLengthIn > 0) {
@@ -662,7 +726,10 @@ async function finalizeWeightSheetImport(
     )
   }
 
-  const importData = buildWeightImportFromSheets(weightTable, layout, genioxType, rawText)
+  let importData = buildWeightImportFromSheets(weightTable, layout, genioxType, rawText)
+  if (meshLengthMm && meshLengthMm > 0) {
+    importData = fitImportDataToMeshLength(importData, meshLengthMm)
+  }
   const json = JSON.stringify(importData, null, 2)
 
   const frameLength = importData.frameDimensions?.length || layout.baseframeLengthMm

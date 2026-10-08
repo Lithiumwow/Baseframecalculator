@@ -33,12 +33,20 @@ import {
   createWeightImportTemplate,
   type WeightImportData,
 } from "../utils/weightImport"
-import { processWeightSheets, processWeightTablePaste, type COGResult } from "../utils/weightSheetImport"
+import { importSystemairWeightText, processWeightSheets, processWeightTablePaste, type COGResult } from "../utils/weightSheetImport"
 import { isSystemairWeightTableText } from "../utils/weightTableParser"
 import { calculateCOG, buildCOGItemsFromImport } from "../utils/cogCalculation"
 import type { WeightAuditBreakdown } from "../utils/weightAudit"
 import { parseDxfSections, readDxfFile } from "../utils/dxfSectionImport"
 import { extractDxfMesh, type DxfCasingMesh } from "../utils/dxfMeshExtract"
+import { extractPdfPageTexts } from "../utils/pdfPageText"
+import { findSubmittalWeightPage } from "../utils/submittalWeightPage"
+import {
+  orderLengthsToDxf,
+  parseSystemairDvf,
+  sameLengthSet,
+  sectionsFromLengthsMm,
+} from "../utils/dvfModules"
 
 export interface WeightImportResult {
   sections: Section[]
@@ -83,6 +91,12 @@ export function WeightImportDialog({
   const [weightsImage, setWeightsImage] = useState<File | null>(null)
   const [pastedWeightText, setPastedWeightText] = useState("")
   const [dxfFileName, setDxfFileName] = useState<string | null>(null)
+  const [dxfText, setDxfText] = useState<string | null>(null)
+  const [submittalName, setSubmittalName] = useState<string | null>(null)
+  const [submittalWeightText, setSubmittalWeightText] = useState<string | null>(null)
+  const [submittalPageLabel, setSubmittalPageLabel] = useState<string | null>(null)
+  const [dvfName, setDvfName] = useState<string | null>(null)
+  const [dvfBytes, setDvfBytes] = useState<Uint8Array | null>(null)
   const [pendingDxfMesh, setPendingDxfMesh] = useState<DxfCasingMesh | null>(null)
 
   const resetImportForm = () => {
@@ -97,6 +111,12 @@ export function WeightImportDialog({
     setWeightsImage(null)
     setPastedWeightText("")
     setDxfFileName(null)
+    setDxfText(null)
+    setSubmittalName(null)
+    setSubmittalWeightText(null)
+    setSubmittalPageLabel(null)
+    setDvfName(null)
+    setDvfBytes(null)
     setPendingDxfMesh(null)
   }
 
@@ -235,33 +255,98 @@ export function WeightImportDialog({
     }
   }
 
-  const buildPreviewFromDxf = (dxfText: string, fileName?: string): WeightImportResult => {
-    const parsed = parseDxfSections(dxfText)
-    const mesh = extractDxfMesh(dxfText, fileName)
+  const composeUnitImport = async (
+    dxf: string,
+    fileName: string | undefined,
+    weightText: string | null,
+    dvf: Uint8Array | null
+  ) => {
+    const parsed = parseDxfSections(dxf)
+    const mesh = extractDxfMesh(dxf, fileName)
     if (mesh) {
-      // Align mesh to the same X=0 origin as imported sections (first module)
-      if (parsed.modules[0]) {
-        mesh.frameOriginXMm = parsed.modules[0].minX
-      }
+      mesh.frameOriginXMm = parsed.frameOriginXMm
       mesh.frameCenterYMm = (mesh.bounds.minY + mesh.bounds.maxY) / 2
     }
     setPendingDxfMesh(mesh)
-    const previewResult = buildPreviewFromImportData(parsed.importData)
-    previewResult.genioxType = parsed.genioxType != null ? String(parsed.genioxType) : undefined
-    previewResult.warnings = [...(parsed.warnings || [])]
+    const meshLen = mesh ? mesh.bounds.maxX - mesh.bounds.minX : parsed.frameLengthMm
+    const geometric = parsed.sections.map(
+      (section) => section.length || section.endPosition - section.startPosition
+    )
+    const warnings = [...(parsed.warnings || [])]
     if (mesh) {
-      previewResult.warnings.push(
+      warnings.push(
         `Casing mesh ready for 3D view: ${mesh.triangleCount.toLocaleString()} triangles (includes baseframe — parametric beams hidden).`
       )
-    } else {
-      previewResult.warnings.push(
-        "No 3DFACE mesh found in this DXF — 3D view will use simple section boxes."
+    }
+
+    let dvfInfo: ReturnType<typeof parseSystemairDvf> | null = null
+    if (dvf) {
+      dvfInfo = parseSystemairDvf(dvf)
+      warnings.push(
+        `DVF casing modules: ${dvfInfo.casingLengthsMm.join(" + ")} mm` +
+          (dvfInfo.baseframeHeightMm != null
+            ? `, baseframe height ${dvfInfo.baseframeHeightMm} mm`
+            : "") +
+          "."
       )
     }
-    previewResult.importJson = JSON.stringify(parsed.importData, null, 2)
+
+    const geniox = parsed.genioxType ?? parseInt(genioxType, 10)
+
+    if (weightText) {
+      const result = await importSystemairWeightText(weightText, geniox, meshLen)
+      const pdfMm = (result.importData.sections || []).map((section) =>
+        Math.round(section.length || 0)
+      )
+      if (dvfInfo) {
+        warnings.push(
+          sameLengthSet(pdfMm, dvfInfo.casingLengthsMm)
+            ? "PDF section lengths match the DVF casing modules."
+            : `PDF lengths (${pdfMm.join(", ")} mm) differ from the DVF modules (${dvfInfo.casingLengthsMm.join(", ")} mm). The PDF order is used.`
+        )
+      }
+      const previewResult = buildPreviewFromImportData(result.importData, result.cog)
+      previewResult.sections = result.sections
+      previewResult.loads = result.loads
+      previewResult.frameLength = result.frameLength
+      previewResult.frameWidth = result.frameWidth
+      previewResult.unitTotalLb = result.unitTotalLb
+      previewResult.otherComponentsLb = result.otherComponentsLb
+      previewResult.weightAudit = result.weightAudit
+      previewResult.casingMesh = mesh
+      previewResult.genioxType = String(geniox)
+      previewResult.warnings = warnings
+      previewResult.importJson = result.json
+      setImportText(result.json)
+      setPreview(previewResult)
+      return
+    }
+
+    if (dvfInfo) {
+      const ordered = orderLengthsToDxf(dvfInfo.casingLengthsMm, geometric)
+      const importData = sectionsFromLengthsMm(ordered, meshLen, parsed.frameWidthMm)
+      warnings.push(`Section order matched to the DXF: ${ordered.join(" + ")} mm.`)
+      const previewResult = buildPreviewFromImportData(importData)
+      previewResult.casingMesh = mesh
+      previewResult.genioxType = parsed.genioxType != null ? String(parsed.genioxType) : undefined
+      previewResult.warnings = warnings
+      previewResult.loads = []
+      const json = JSON.stringify(importData, null, 2)
+      previewResult.importJson = json
+      setImportText(json)
+      setPreview(previewResult)
+      return
+    }
+
+    const previewResult = buildPreviewFromImportData(parsed.importData)
+    previewResult.genioxType = parsed.genioxType != null ? String(parsed.genioxType) : undefined
+    previewResult.warnings = warnings
     previewResult.loads = []
     previewResult.casingMesh = mesh
-    return previewResult
+    const json = JSON.stringify(parsed.importData, null, 2)
+    previewResult.importJson = json
+    setImportText(json)
+    setPreview(previewResult)
   }
 
   const handleDxfUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -276,13 +361,65 @@ export function WeightImportDialog({
       setOcrStage("Reading DXF...")
       setDxfFileName(file.name)
       const text = await readDxfFile(file)
-      setOcrStage("Extracting casing mesh...")
-      setImportText(JSON.stringify(parseDxfSections(text).importData, null, 2))
-      setPreview(buildPreviewFromDxf(text, file.name))
+      setDxfText(text)
+      setOcrStage("Matching sections...")
+      await composeUnitImport(text, file.name, submittalWeightText, dvfBytes)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse DXF")
       setPreview(null)
       setPendingDxfMesh(null)
+    } finally {
+      setIsProcessingOCR(false)
+      setOcrStage("")
+    }
+  }
+
+  const handleSubmittalPdf = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      setError(null)
+      setIsProcessingOCR(true)
+      setOcrStage("Reading submittal PDF...")
+      const pages = await extractPdfPageTexts(await file.arrayBuffer())
+      const page = findSubmittalWeightPage(pages)
+      const label = `Weights page ${page.pageNumber} of ${pages.length} (${page.unit === "kg" ? "mm, kg" : page.unit === "lbs" ? "in, lb" : page.unit})`
+      setSubmittalName(file.name)
+      setSubmittalWeightText(page.text)
+      setSubmittalPageLabel(label)
+      if (!dxfText) {
+        setError(null)
+        return
+      }
+      setOcrStage("Applying weights to DXF sections...")
+      setPreview(null)
+      await composeUnitImport(dxfText, dxfFileName ?? undefined, page.text, dvfBytes)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to read the submittal PDF")
+    } finally {
+      setIsProcessingOCR(false)
+      setOcrStage("")
+    }
+  }
+
+  const handleDvfUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      setError(null)
+      setIsProcessingOCR(true)
+      setOcrStage("Reading SystemairCAD DVF...")
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      parseSystemairDvf(bytes)
+      setDvfName(file.name)
+      setDvfBytes(bytes)
+      if (!dxfText) return
+      setPreview(null)
+      await composeUnitImport(dxfText, dxfFileName ?? undefined, submittalWeightText, bytes)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to read the DVF")
+      setDvfBytes(null)
+      setDvfName(null)
     } finally {
       setIsProcessingOCR(false)
       setOcrStage("")
@@ -471,9 +608,9 @@ export function WeightImportDialog({
           {importType === "dxf" && (
             <div className="space-y-4 border rounded-lg p-4 bg-gray-50">
               <p className="text-xs text-muted-foreground">
-                Upload a Systemair / Geniox 3D DXF to create empty casing sections from module geometry
-                and load the casing triangle mesh into the 3D view. Weights are not in the DXF — import a
-                weight table afterward.
+                Upload the DXF for the 3D casing. Add the SystemairCAD DVF for the real casing-module
+                lengths, and the submittal PDF for weights. The weights page is found automatically, in
+                inches or millimetres.
               </p>
               <div>
                 <Label htmlFor="dxf-upload">DXF file</Label>
@@ -486,6 +623,33 @@ export function WeightImportDialog({
                 />
                 {dxfFileName && (
                   <p className="text-xs text-green-600 mt-1">✓ {dxfFileName}</p>
+                )}
+              </div>
+              <div>
+                <Label htmlFor="dvf-upload">SystemairCAD DVF (module lengths)</Label>
+                <input
+                  id="dvf-upload"
+                  type="file"
+                  accept=".dvf,.DVF,application/octet-stream"
+                  onChange={handleDvfUpload}
+                  className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {dvfName && <p className="text-xs text-green-600 mt-1">✓ {dvfName}</p>}
+              </div>
+              <div>
+                <Label htmlFor="submittal-pdf">Submittal PDF (weights page)</Label>
+                <input
+                  id="submittal-pdf"
+                  type="file"
+                  accept=".pdf,application/pdf"
+                  onChange={handleSubmittalPdf}
+                  className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                />
+                {submittalName && (
+                  <p className="text-xs text-green-600 mt-1">
+                    ✓ {submittalName}
+                    {submittalPageLabel ? ` — ${submittalPageLabel}` : ""}
+                  </p>
                 )}
               </div>
               {isProcessingOCR && (
