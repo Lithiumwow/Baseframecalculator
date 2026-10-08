@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import * as THREE from "three"
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js"
 import { Button } from "@/components/ui/button"
@@ -69,6 +69,53 @@ type ViewApi = {
   iso: () => void
   front: () => void
   top: () => void
+  selectSection: (index: number | null) => void
+}
+
+function makeSectionOutline(
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+  z0: number,
+  z1: number,
+  color: number,
+  label: string
+): THREE.Group {
+  const g = new THREE.Group()
+  const w = Math.max(0.04, x1 - x0)
+  const h = Math.max(0.08, y1 - y0)
+  const d = Math.max(0.04, z1 - z0)
+  const cx = (x0 + x1) / 2
+  const cy = (y0 + y1) / 2
+  const cz = (z0 + z1) / 2
+  const box = new THREE.BoxGeometry(w, h, d)
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(box),
+    new THREE.LineBasicMaterial({ color, depthTest: false })
+  )
+  edges.position.set(cx, cy, cz)
+  edges.renderOrder = 4
+  const fill = new THREE.Mesh(
+    box,
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.14,
+      depthWrite: false,
+      side: THREE.BackSide,
+    })
+  )
+  fill.position.set(cx, cy, cz)
+  fill.renderOrder = 3
+  const arrow = makeArrow(color, 0.28, 0.01, 0.028, 0.07)
+  arrow.rotation.x = Math.PI
+  arrow.position.set(cx, y1 + 0.32, cz)
+  const tag = makeLabelSprite(label, "#0f172a", "rgba(255,255,255,0.96)")
+  tag.position.set(cx, y1 + 0.52, cz)
+  g.add(edges, fill, arrow, tag)
+  g.visible = false
+  return g
 }
 
 function disposeObject(obj: THREE.Object3D) {
@@ -155,6 +202,8 @@ export function Frame3DViewer({
 }: Frame3DViewerProps) {
   const mountRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<ViewApi | null>(null)
+  const selectedRef = useRef<number | null>(null)
+  const [selectedSection, setSelectedSection] = useState<number | null>(null)
 
   useEffect(() => {
     const mount = mountRef.current
@@ -169,13 +218,32 @@ export function Frame3DViewer({
       ? Math.max(0.15, (casingMesh!.bounds.maxZ - casingMesh!.bounds.minZ) * 0.001)
       : 0
     const casingH = hasDxfMesh ? meshH : 0.35
-    // Analysis footprint (loads / reactions / COG use these)
-    const spanX = L
-    const spanZ = W
-    const contentTop = beamH + casingH + 0.55
-    const contentBottom = -0.45
 
-    const modelCenter = new THREE.Vector3(spanX / 2, (contentTop + contentBottom) / 2, spanZ / 2)
+    // Footprint the markers sit on. With a DXF this is the mesh itself
+    // (baseframe included), not the shorter analysis rectangle.
+    let footMinX = 0
+    let footMaxX = L
+    let footMinZ = 0
+    let footMaxZ = W
+    let footMaxY = beamH + casingH
+    if (hasDxfMesh && casingMesh) {
+      const b = casingMesh.bounds
+      const originX = casingMesh.frameOriginXMm ?? b.minX
+      const centerY = casingMesh.frameCenterYMm ?? (b.minY + b.maxY) / 2
+      const s = 0.001
+      footMinX = (b.minX - originX) * s
+      footMaxX = (b.maxX - originX) * s
+      footMinZ = (b.minY - centerY) * s + W / 2
+      footMaxZ = (b.maxY - centerY) * s + W / 2
+      footMaxY = (b.maxZ - b.minZ) * s
+    }
+    const spanX = Math.max(footMaxX, L) - Math.min(footMinX, 0)
+    const spanZ = Math.max(footMaxZ, W) - Math.min(footMinZ, 0)
+    const contentTop = footMaxY + 0.7
+    const contentBottom = -0.35
+    const midX = (Math.min(footMinX, 0) + Math.max(footMaxX, L)) / 2
+    const midZ = (Math.min(footMinZ, 0) + Math.max(footMaxZ, W)) / 2
+    const modelCenter = new THREE.Vector3(midX, (contentTop + contentBottom) / 2, midZ)
     const size = new THREE.Vector3(spanX, contentTop - contentBottom, spanZ)
     const radius = Math.max(size.length() * 0.55, 0.4)
 
@@ -254,6 +322,7 @@ export function Frame3DViewer({
 
     const contour = buildMomentContour(bendingMomentData, frameLength, 40, loadPeaks)
     const segCount = Math.max(8, contour.length - 1)
+    let pickMesh: THREE.Mesh | null = null
 
     // Parametric rails only when there is no DXF (DXF already includes the baseframe)
     if (!hasDxfMesh) {
@@ -359,28 +428,42 @@ export function Frame3DViewer({
         })
       )
       root.add(solid, wire)
-
-      // Light section-boundary markers (not solid walls)
-      sections.forEach((section, index) => {
-        if (index === 0) return
-        const x0 = section.startPosition / 1000
-        const marker = new THREE.Mesh(
-          new THREE.BoxGeometry(0.006, Math.max(0.08, casingH * 0.35), W * 0.92),
-          new THREE.MeshBasicMaterial({ color: 0x0f172a, transparent: true, opacity: 0.2 })
-        )
-        marker.position.set(x0, casingH * 0.35, W / 2)
-        root.add(marker)
-      })
+      pickMesh = solid
     }
 
+    const sectionOutlines: THREE.Group[] = []
+    const z0 = footMinZ
+    const z1 = footMaxZ
+    const y1 = footMaxY
     sections.forEach((section, index) => {
-      const midX = (section.startPosition + section.endPosition) / 2 / 1000
-      const label = makeLabelSprite(section.name || `Section ${index + 1}`)
-      // Stagger slightly in Z so labels don't stack when sections are short
-      const zOff = ((index % 3) - 1) * 0.12
-      label.position.set(midX, beamH + casingH + 0.16, W / 2 + zOff)
-      root.add(label)
+      const x0 = section.startPosition / 1000
+      const x1 = section.endPosition / 1000
+      const name = section.name || `Section ${index + 1}`
+      const color = SECTION_TINTS[index % SECTION_TINTS.length]
+      const outline = makeSectionOutline(x0, x1, 0, y1, z0, z1, color, name)
+      root.add(outline)
+      sectionOutlines.push(outline)
+
+      // Compact pin so sections stay identifiable without overlapping name plates
+      const pin = new THREE.Mesh(
+        new THREE.SphereGeometry(0.035, 12, 12),
+        new THREE.MeshBasicMaterial({ color, depthTest: false })
+      )
+      const px = (x0 + x1) / 2
+      const pz = (z0 + z1) / 2
+      pin.position.set(px, y1 + 0.06, pz)
+      pin.renderOrder = 5
+      const num = makeLabelSprite(String(index + 1), "#ffffff", `#${color.toString(16).padStart(6, "0")}`)
+      num.position.set(px, y1 + 0.2 + (index % 2) * 0.12, pz)
+      root.add(pin, num)
     })
+
+    const applySection = (index: number | null) => {
+      sectionOutlines.forEach((g, i) => {
+        g.visible = index === i
+      })
+    }
+    applySection(selectedRef.current)
 
     const maxLoadN = Math.max(1, ...loadPeaks.map((p) => p.weight))
 
@@ -448,44 +531,56 @@ export function Frame3DViewer({
       root.add(arrow)
     })
 
-    // Corner support reactions (gravity case) — not lifting lugs
+    // Corner support reactions on the DXF / frame footprint corners
     const R = results.cornerReactions || { R1: 0, R2: 0, R3: 0, R4: 0 }
     const maxR = Math.max(1, R.R1, R.R2, R.R3, R.R4)
+    const rx0 = footMinX
+    const rx1 = footMaxX
+    const rz0 = footMinZ
+    const rz1 = footMaxZ
     const corners = [
-      { x: 0, z: 0, r: R.R1, name: "R1" },
-      { x: L, z: 0, r: R.R2, name: "R2" },
-      { x: 0, z: W, r: R.R3, name: "R3" },
-      { x: L, z: W, r: R.R4, name: "R4" },
+      { x: rx0, z: rz0, r: R.R1, name: "R1" },
+      { x: rx1, z: rz0, r: R.R2, name: "R2" },
+      { x: rx0, z: rz1, r: R.R3, name: "R3" },
+      { x: rx1, z: rz1, r: R.R4, name: "R4" },
     ]
+    const footCx = (rx0 + rx1) / 2
+    const footCz = (rz0 + rz1) / 2
     corners.forEach((c) => {
-      if (c.r <= 0) return
-      const scale = 0.08 + 0.22 * (c.r / maxR)
-      // Support reaction: pad on ground + short upward arrow (frame sitting on supports)
+      const scale = c.r > 0 ? 0.08 + 0.1 * (c.r / maxR) : 0.08
       const pad = new THREE.Mesh(
         new THREE.CylinderGeometry(0.045, 0.05, 0.02, 16),
         new THREE.MeshLambertMaterial({ color: 0x16a34a })
       )
-      pad.position.set(c.x, -0.03, c.z)
+      pad.position.set(c.x, 0.01, c.z)
       root.add(pad)
-      const arrow = makeArrow(0x16a34a, scale, 0.01, 0.024, 0.035)
-      arrow.position.set(c.x, -0.02, c.z)
+      const arrow = makeArrow(0x16a34a, scale, 0.01, 0.022, 0.03)
+      arrow.position.set(c.x, 0.015, c.z)
       root.add(arrow)
       const tag = makeLabelSprite(c.name, "#14532d", "rgba(220,252,231,0.95)")
-      tag.position.set(c.x, scale + 0.05, c.z)
+      const ox = (c.x >= footCx ? 1 : -1) * 0.22
+      const oz = (c.z >= footCz ? 1 : -1) * 0.22
+      tag.position.set(c.x + ox, 0.16, c.z + oz)
       root.add(tag)
     })
 
     if (cog && Number.isFinite(cog.cogX) && Number.isFinite(cog.cogY)) {
       const cogMesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.04, 16, 16),
-        new THREE.MeshLambertMaterial({ color: 0xf97316 })
+        new THREE.SphereGeometry(0.045, 16, 16),
+        new THREE.MeshLambertMaterial({ color: 0xf97316, depthTest: false })
       )
-      cogMesh.position.set(cog.cogX / 1000, beamH + casingH * 0.55, cog.cogY / 1000)
+      const cogZ =
+        frameWidth > 0
+          ? rz0 + (cog.cogY / frameWidth) * (rz1 - rz0)
+          : (rz0 + rz1) / 2
+      cogMesh.position.set(cog.cogX / 1000, footMaxY * 0.45, cogZ)
+      cogMesh.renderOrder = 6
       root.add(cogMesh)
     }
 
-    const grid = new THREE.GridHelper(Math.max(L, W) * 1.4, 12, 0xcbd5e1, 0xe2e8f0)
-    grid.position.set(L / 2, -0.001, W / 2)
+    const gridSpan = Math.max(spanX, spanZ) * 1.35
+    const grid = new THREE.GridHelper(gridSpan, 12, 0xcbd5e1, 0xe2e8f0)
+    grid.position.set(midX, -0.001, midZ)
     root.add(grid)
 
     const fitDistance = () => {
@@ -516,8 +611,47 @@ export function Frame3DViewer({
       iso: () => setView(new THREE.Vector3(1, 0.9, 1)),
       front: () => setView(new THREE.Vector3(0.02, 0.2, 1)),
       top: () => setView(new THREE.Vector3(0.001, 1, 0.001)),
+      selectSection: (index) => {
+        selectedRef.current = index
+        applySection(index)
+      },
     }
     apiRef.current = api
+
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2()
+    let downX = 0
+    let downY = 0
+    const onPointerDown = (event: PointerEvent) => {
+      downX = event.clientX
+      downY = event.clientY
+    }
+    const onPointerUp = (event: PointerEvent) => {
+      if (Math.hypot(event.clientX - downX, event.clientY - downY) > 5) return
+      if (!pickMesh) return
+      const rect = renderer.domElement.getBoundingClientRect()
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, camera)
+      const hits = raycaster.intersectObject(pickMesh, false)
+      if (!hits.length) {
+        api.selectSection(null)
+        setSelectedSection(null)
+        return
+      }
+      const local = root.worldToLocal(hits[0].point.clone())
+      const xMm = local.x * 1000
+      let idx: number | null = null
+      sections.forEach((section, i) => {
+        if (xMm >= section.startPosition - 5 && xMm <= section.endPosition + 5) idx = i
+      })
+      if (idx == null) return
+      const next = selectedRef.current === idx ? null : idx
+      api.selectSection(next)
+      setSelectedSection(next)
+    }
+    renderer.domElement.addEventListener("pointerdown", onPointerDown)
+    renderer.domElement.addEventListener("pointerup", onPointerUp)
 
     let didInitialFit = false
     const resize = () => {
@@ -553,6 +687,8 @@ export function Frame3DViewer({
       cancelAnimationFrame(raf)
       ro.disconnect()
       controls.removeEventListener("change", clampTarget)
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown)
+      renderer.domElement.removeEventListener("pointerup", onPointerUp)
       controls.dispose()
       disposeObject(root)
       renderer.dispose()
@@ -574,8 +710,14 @@ export function Frame3DViewer({
   ])
 
   const maxMoment = results.maxBendingMoment || 0
-  const runView = (name: keyof ViewApi) => apiRef.current?.[name]()
+  const runView = (name: "fit" | "iso" | "front" | "top") => apiRef.current?.[name]()
   const hasMesh = casingMesh != null && casingMesh.triangleCount > 0
+  const chooseSection = (index: number) => {
+    const next = selectedSection === index ? null : index
+    selectedRef.current = next
+    setSelectedSection(next)
+    apiRef.current?.selectSection(next)
+  }
 
   return (
     <div className={className}>
@@ -583,10 +725,9 @@ export function Frame3DViewer({
         <div className="text-sm text-gray-600 max-w-xl">
           {hasMesh ? (
             <>
-              DXF unit mesh ({casingMesh!.triangleCount.toLocaleString()} triangles) — includes
-              casing and baseframe; parametric beams are hidden. Tint = bending moment. Red arrows
-              = loads; amber = casing weight; green = corner <em>support reactions</em>
-              {cog ? "; orange = COG" : ""}.
+              DXF unit mesh ({casingMesh!.triangleCount.toLocaleString()} triangles). Green R1–R4 sit
+              on the mesh corners. Click the unit or a section button to outline that section.
+              {cog ? " Orange = COG." : ""}
             </>
           ) : (
             <>
@@ -627,13 +768,31 @@ export function Frame3DViewer({
           </div>
         </div>
       </div>
+      {sections.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {sections.map((section, index) => (
+            <Button
+              key={section.id || index}
+              type="button"
+              size="sm"
+              variant={selectedSection === index ? "default" : "outline"}
+              onClick={() => chooseSection(index)}
+            >
+              {section.name || `Section ${index + 1}`}
+            </Button>
+          ))}
+        </div>
+      )}
       <div
         ref={mountRef}
         className="relative w-full h-[480px] rounded-lg border border-gray-200 overflow-hidden bg-gray-100 touch-none"
       />
       <p className="text-xs text-gray-500 mt-2">
-        Drag to orbit · scroll to zoom · right-drag to pan (limited). Click <strong>Fit</strong> to
-        re-center. Contour uses the longitudinal moment diagram from the current analysis.
+        Drag to orbit · scroll to zoom · right-drag to pan. Click the model to outline one section
+        {selectedSection != null
+          ? ` — ${sections[selectedSection]?.name || `Section ${selectedSection + 1}`}`
+          : ""}
+        . R1–R4 are the four corners of the DXF footprint.
       </p>
     </div>
   )
