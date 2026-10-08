@@ -341,6 +341,29 @@ function assignComponentLoads(
 
     const sectionComponents = weightTableComponentsForLoads(section.components)
 
+    // No layout drawing: modules stacked in the same section (filter above a fan,
+    // and so on) share that length. One load is their total weight.
+    if (!trustLayout) {
+      const totalWeight = Math.round(sectionComponents.reduce((sum, row) => sum + row.weightLb, 0) * 100) / 100
+      const lengthMm = Math.round(inchesToMm(sectionLengthIn))
+      if (totalWeight > 0 && lengthMm > 0 && !isNegligibleComponentWeight(totalWeight, weightUnit)) {
+        const names = sectionComponents
+          .filter((row) => !isNegligibleComponentWeight(row.weightLb, weightUnit))
+          .map((row) => row.name)
+        components.push({
+          name: names.join(" + ") || `Section ${section.sectionNo || sectionIdx + 1}`,
+          sectionIndex: sectionIdx,
+          position: 0,
+          weight: totalWeight,
+          weightUnit,
+          loadType: "Distributed Load",
+          loadLength: lengthMm,
+          loadWidth: frameWidthMm,
+        })
+      }
+      continue
+    }
+
     const useDualDeck =
       layout.layoutOrientation === "horizontal" &&
       looksLikeDualDeckWeightTable(sectionComponents)
@@ -380,6 +403,9 @@ function assignComponentLoads(
 
     placements.forEach((placement) => {
       if (placement.loadLengthMm <= 0) return
+      // Inspection rows are ~0.1 kg. Keeping them as loads draws a 1 N strip and
+      // punches a hole in the shear and moment diagrams.
+      if (isNegligibleComponentWeight(placement.weightLb, weightUnit)) return
       components.push({
         name: placement.displayName,
         sectionIndex: sectionIdx,
@@ -517,6 +543,12 @@ export function buildWeightImportFromSheets(
  */
 export function parseWeightTableFromText(text: string): ParsedWeightTable {
   return parsePastedWeightTable(text)
+}
+
+function isNegligibleComponentWeight(weight: number, unit: "lbs" | "kg"): boolean {
+  if (weight <= 0) return true
+  const newtons = unit === "kg" ? weight * 9.80665 : weight * 4.4482216153
+  return newtons < 10
 }
 
 function layoutFromWeightTable(weightTable: ParsedWeightTable): ParsedLayout {

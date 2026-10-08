@@ -47,6 +47,7 @@ import {
   sameLengthSet,
   sectionsFromLengthsMm,
 } from "../utils/dvfModules"
+import { buildDvfPlanModel, downloadDvfPlanPdf } from "../utils/dvfPlanDrawing"
 
 export interface WeightImportResult {
   sections: Section[]
@@ -402,6 +403,26 @@ export function WeightImportDialog({
     }
   }
 
+  const handleDownloadDvfPlan = async () => {
+    if (!dvfBytes) return
+    try {
+      setError(null)
+      const info = parseSystemairDvf(dvfBytes)
+      const geometric =
+        preview?.sections.map((section) => section.endPosition - section.startPosition) ??
+        (dxfText
+          ? parseDxfSections(dxfText).sections.map((section) => section.length)
+          : info.casingLengthsMm)
+      const ordered = orderLengthsToDxf(info.casingLengthsMm, geometric)
+      const sizeCode = info.articleCodes.find((code) => code.startsWith("GXCS-"))
+      const geniox = sizeCode ? parseInt(sizeCode.split("-")[1], 10) : parseInt(genioxType, 10) || 10
+      const model = buildDvfPlanModel(dvfBytes, info, ordered, geniox)
+      await downloadDvfPlanPdf(model)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to build the plan drawing")
+    }
+  }
+
   const handleDvfUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -635,6 +656,17 @@ export function WeightImportDialog({
                   className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                 />
                 {dvfName && <p className="text-xs text-green-600 mt-1">✓ {dvfName}</p>}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  disabled={!dvfBytes}
+                  onClick={handleDownloadDvfPlan}
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Download plan from DVF
+                </Button>
               </div>
               <div>
                 <Label htmlFor="submittal-pdf">Submittal PDF (weights page)</Label>

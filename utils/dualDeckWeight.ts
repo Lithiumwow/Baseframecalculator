@@ -71,7 +71,10 @@ export function assignDualDeckBayLoads(
       top?.name.toLowerCase().includes("inspection") ||
       top?.name.toLowerCase().includes("empty")
 
-    if (totalWeight <= 0 && !includeZeroWeight) {
+    const negligible =
+      totalWeight > 0 &&
+      (weightUnit === "kg" ? totalWeight * 9.80665 : totalWeight * 4.4482216153) < 10
+    if ((totalWeight <= 0 && !includeZeroWeight) || negligible) {
       positionMm += loadLengthMm
       continue
     }

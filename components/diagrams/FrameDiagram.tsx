@@ -245,6 +245,7 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({
                 stroke="red"
                 strokeWidth="1"
               />
+              {loadValue >= 10 && (
               <text
                 x={
                   Math.max(margin, validateNumber(x, margin)) +
@@ -258,6 +259,7 @@ export const FrameDiagram: React.FC<FrameDiagramProps> = ({
               >
                 {loadValue.toFixed(0)}N
               </text>
+              )}
               {load.name && (
                 <text
                   x={

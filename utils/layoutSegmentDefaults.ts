@@ -29,7 +29,8 @@ export function defaultLengthInForKind(kind: WeightComponentKind | null): number
     case "electric_heat":
       return 19.7
     case "inspection":
-      return 31.5
+      // Geniox inspection modules are 100 mm (3.9 in), not a full casing bay.
+      return 3.9
     case "control_box":
       return 15.7
     case "fan":

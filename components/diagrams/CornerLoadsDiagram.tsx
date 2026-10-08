@@ -205,7 +205,7 @@ export const CornerLoadsDiagram: React.FC<CornerLoadsDiagramProps> = ({
                 strokeWidth="2"
               />
               {/* Load label - positioned inside the box to avoid overlap */}
-              {loadLengthMM * scaleX > 40 && (
+              {loadLengthMM * scaleX > 40 && loadValue >= 10 && (
                 <text
                   x={
                     Math.max(margin, validateNumber(x, margin)) +
